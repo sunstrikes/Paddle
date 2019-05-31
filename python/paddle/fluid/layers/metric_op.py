@@ -50,19 +50,20 @@ def accuracy(input, label, k=1, correct=None, total=None):
     Examples:
         .. code-block:: python
 
+           import paddle.fluid as fluid
            data = fluid.layers.data(name="data", shape=[-1, 32, 32], dtype="float32")
-           label = fluid.layers.data(name="data", shape=[-1,1], dtype="int32")
+           label = fluid.layers.data(name="label", shape=[-1,1], dtype="int32")
            predict = fluid.layers.fc(input=data, size=10)
-           acc = fluid.layers.accuracy(input=predict, label=label, k=5)
+           accuracy_out = fluid.layers.accuracy(input=predict, label=label, k=5)
 
     """
     helper = LayerHelper("accuracy", **locals())
     topk_out, topk_indices = nn.topk(input, k=k)
-    acc_out = helper.create_tmp_variable(dtype="float32")
+    acc_out = helper.create_variable_for_type_inference(dtype="float32")
     if correct is None:
-        correct = helper.create_tmp_variable(dtype="int64")
+        correct = helper.create_variable_for_type_inference(dtype="int64")
     if total is None:
-        total = helper.create_tmp_variable(dtype="int64")
+        total = helper.create_variable_for_type_inference(dtype="int64")
     helper.append_op(
         type="accuracy",
         inputs={
@@ -119,13 +120,15 @@ def auc(input,
     Examples:
         .. code-block:: python
 
-            # network is a binary classification model and label the ground truth
-            prediction = network(image, is_infer=True)
-            auc_out=fluid.layers.auc(input=prediction, label=label)
+            import paddle.fluid as fluid
+            data = fluid.layers.data(name="data", shape=[32, 32], dtype="float32")
+            label = fluid.layers.data(name="label", shape=[1], dtype="int32")
+            predict = fluid.layers.fc(input=data, size=2)
+            auc_out = fluid.layers.auc(input=predict, label=label)
     """
     helper = LayerHelper("auc", **locals())
-    auc_out = helper.create_tmp_variable(dtype="float64")
-    batch_auc_out = helper.create_tmp_variable(dtype="float64")
+    auc_out = helper.create_variable_for_type_inference(dtype="float64")
+    batch_auc_out = helper.create_variable_for_type_inference(dtype="float64")
     # make tp, tn, fp, fn persistable, so that can accumulate all batches.
 
     # for batch auc

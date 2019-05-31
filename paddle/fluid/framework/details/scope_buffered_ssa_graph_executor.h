@@ -13,7 +13,8 @@
 // limitations under the License.
 
 #pragma once
-
+#include <ThreadPool.h>
+#include <list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -47,9 +48,14 @@ class ScopeBufferedSSAGraphExecutor : public SSAGraphExecutor {
 
   FeedFetchList Run(const std::vector<std::string>& fetch_tensors) override;
 
+  void DropLocalExeScopes();
+
+  bool NeedCreateLocalExeScope();
+
+  void PrepareLocalExeScopes();
+
  private:
   size_t drop_scope_counter_{0};
-
   ExecutionStrategy strategy_;
   std::unique_ptr<SSAGraphExecutor> underlying_executor_;
   std::vector<Scope*> local_scopes_;
