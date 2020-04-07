@@ -39,6 +39,24 @@ extern std::string paddle::framework::DataTypeToString(
 namespace paddle {
 namespace inference {
 
+template <typename T>
+constexpr PaddleDType PaddleTensorGetDType();
+
+template <>
+constexpr PaddleDType PaddleTensorGetDType<int32_t>() {
+  return PaddleDType::INT32;
+}
+
+template <>
+constexpr PaddleDType PaddleTensorGetDType<int64_t>() {
+  return PaddleDType::INT64;
+}
+
+template <>
+constexpr PaddleDType PaddleTensorGetDType<float>() {
+  return PaddleDType::FLOAT32;
+}
+
 using paddle::framework::DataTypeToString;
 
 // Timer for timer
@@ -64,9 +82,12 @@ static int GetUniqueId() {
 }
 
 static void split(const std::string &str, char sep,
-                  std::vector<std::string> *pieces) {
+                  std::vector<std::string> *pieces, bool ignore_null = true) {
   pieces->clear();
   if (str.empty()) {
+    if (!ignore_null) {
+      pieces->push_back(str);
+    }
     return;
   }
   size_t pos = 0;
@@ -160,10 +181,28 @@ int VecReduceToInt(const std::vector<T> &v) {
 }
 
 template <typename T>
+void CheckAssignedData(const std::vector<std::vector<T>> &data,
+                       const int num_elems) {
+  int num = 0;
+  for (auto it = data.begin(); it != data.end(); ++it) {
+    num += (*it).size();
+  }
+  PADDLE_ENFORCE_EQ(
+      num, num_elems,
+      platform::errors::OutOfRange(
+          "The number of elements out of bounds. "
+          "Expected number of elements = %d. But received %d. Suggested Fix: "
+          "If the tensor is expected to assign %d elements, check the number "
+          "of elements of your 'infer_data'.",
+          num_elems, num, num_elems));
+}
+
+template <typename T>
 static void TensorAssignData(PaddleTensor *tensor,
                              const std::vector<std::vector<T>> &data) {
   // Assign buffer
   int num_elems = VecReduceToInt(tensor->shape);
+  CheckAssignedData(data, num_elems);
   tensor->data.Resize(sizeof(T) * num_elems);
   int c = 0;
   for (const auto &f : data) {
@@ -314,7 +353,7 @@ static void PrintTime(int batch_size, int repeat, int num_threads, int tid,
                       double batch_latency, int epoch = 1,
                       const framework::proto::VarType::Type data_type =
                           framework::proto::VarType::FP32) {
-  PADDLE_ENFORCE(batch_size > 0, "Non-positive batch size.");
+  PADDLE_ENFORCE_GT(batch_size, 0, "Non-positive batch size.");
   double sample_latency = batch_latency / batch_size;
   LOG(INFO) << "====== threads: " << num_threads << ", thread id: " << tid
             << " ======";

@@ -63,5 +63,8 @@ std::shared_ptr<TrainerBase> TrainerFactory::CreateTrainer(
 
 REGISTER_TRAINER_CLASS(MultiTrainer);
 REGISTER_TRAINER_CLASS(DistMultiTrainer);
+#if defined(PADDLE_WITH_NCCL)
+REGISTER_TRAINER_CLASS(PipelineTrainer);
+#endif
 }  // namespace framework
 }  // namespace paddle

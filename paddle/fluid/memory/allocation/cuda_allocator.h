@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #pragma once
+#include <mutex>  // NOLINT
 #include "paddle/fluid/memory/allocation/allocator.h"
 #include "paddle/fluid/platform/place.h"
 
@@ -23,16 +24,16 @@ namespace allocation {
 class CUDAAllocator : public Allocator {
  public:
   explicit CUDAAllocator(const platform::CUDAPlace& place) : place_(place) {}
-  explicit CUDAAllocator(const platform::Place& place)
-      : place_(boost::get<platform::CUDAPlace>(place)) {}
+
   bool IsAllocThreadSafe() const override;
 
  protected:
   void FreeImpl(Allocation* allocation) override;
-  Allocation* AllocateImpl(size_t size, Allocator::Attr attr) override;
+  Allocation* AllocateImpl(size_t size) override;
 
  private:
   platform::CUDAPlace place_;
+  std::once_flag once_flag_;
 };
 
 }  // namespace allocation

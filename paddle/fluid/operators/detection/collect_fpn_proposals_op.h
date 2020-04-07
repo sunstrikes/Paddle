@@ -20,7 +20,6 @@ limitations under the License.*/
 #include <string>
 #include <vector>
 #include "paddle/fluid/framework/op_registry.h"
-#include "paddle/fluid/operators/detail/safe_ref.h"
 #include "paddle/fluid/operators/gather.h"
 #include "paddle/fluid/operators/math/math_function.h"
 
@@ -96,7 +95,7 @@ class CollectFpnProposalsOpKernel : public framework::OpKernel<T> {
       auto cur_scores_lod = multi_layer_scores[i]->lod().back();
       int cur_batch_id = 0;
       for (int j = 0; j < cur_level_num; ++j) {
-        if (j >= cur_scores_lod[cur_batch_id + 1]) {
+        if (static_cast<size_t>(j) >= cur_scores_lod[cur_batch_id + 1]) {
           cur_batch_id++;
         }
         int cur_index = j + integral_of_all_rois[i];

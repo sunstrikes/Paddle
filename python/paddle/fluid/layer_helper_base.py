@@ -44,33 +44,45 @@ class LayerHelperBase(object):
     def startup_program(self):
         return default_startup_program()
 
-    def to_variable(self, value, block=None):
-        """convert value to variable
+    def to_variable(self, value, name=None):
+        """
+        The API will create a ``Variable`` object from numpy\.ndarray or Variable object.
 
-            Args:
-                value: value to be convert
-                block: the block of the variable
+        Parameters:
+            value(ndarray): The numpy\.ndarray object that needs to be converted, it can be multi-dimension, and the data type is one of numpy\.{float16, float32, float64, int16, int32, int64, uint8, uint16}.
+            name(str, optional): The default value is None. Normally there is no need for user to set this property. For more information, please refer to :ref:`api_guide_Name`
 
-        Return Variable construct from value
+        Returns:
+            Variable: ``Tensor`` created from the specified numpy\.ndarray object, data type and shape is the same as ``value`` .
+
+        Examples:
+
+         .. code-block:: python
+
+            import numpy as np
+            import paddle.fluid as fluid
+
+            with fluid.dygraph.guard():
+                x = np.ones([2, 2], np.float32)
+                y = fluid.dygraph.to_variable(x)
+
         """
         if isinstance(value, np.ndarray):
             assert in_dygraph_mode(
             ), "to_variable could only be called in dygraph mode"
-
-            if not block:
-                block = default_main_program().current_block()
-            py_var = Variable(
-                block,
-                type=core.VarDesc.VarType.LOD_TENSOR,
-                name=None,
-                shape=value.shape,
-                dtype=value.dtype)
-            var = py_var._ivar.value()
-            tensor = var.get_tensor()
-            tensor.set(value, _current_expected_place())
+            py_var = core.VarBase(
+                value=value,
+                name=name if name else '',
+                persistable=False,
+                place=_current_expected_place(),
+                zero_copy=False)
             return py_var
-        elif isinstance(value, Variable):
+        elif isinstance(value, (core.VarBase, Variable)):
             return value
+        else:
+            raise TypeError(
+                "to_variable only accepts 'ndarray' or 'Variable' or 'VarBase' as value's input"
+            )
 
     def _create_weight_normalize(self, attr, shape, dtype):
         from .layers import elementwise_mul, elementwise_div, reshape
@@ -177,19 +189,24 @@ class LayerHelperBase(object):
             elif dim == 0:
                 out_shape = [x.shape[0]] + [1] * (len(x.shape) - 1)
                 reshape = __reshape_op(x, shape=[x.shape[0], -1], block=block)
-                norm = __norm_op(reshape, dim=1, block=block)
+                norm = __norm_op(reshape, dim=[1], block=block)
                 __reshape_op(norm, out=out, shape=out_shape, block=block)
             elif dim == len(x.shape) - 1:
                 out_shape = [1] * (len(x.shape) - 1) + [x.shape[-1]]
                 reshape = __reshape_op(x, shape=[-1, x.shape[-1]], block=block)
-                norm = __norm_op(reshape, dim=0, block=block)
+                norm = __norm_op(reshape, dim=[0], block=block)
                 __reshape_op(norm, out=out, shape=out_shape, block=block)
             else:
                 perm = list(range(len(x.shape)))
                 perm[0], perm[dim] = dim, 0
                 transpose = __transpose_op(x, perm, block=block)
-                norm = __norm_op(transpose, dim=0, block=block)
-                __transpose_op(norm, perm, out=out, block=block)
+                out_shape = [transpose.shape[0]] + [1] * (len(transpose.shape) -
+                                                          1)
+                reshape = __reshape_op(
+                    transpose, shape=[transpose.shape[0], -1], block=block)
+                norm = __norm_op(reshape, dim=[1], block=block)
+                reshape2 = __reshape_op(norm, shape=out_shape, block=block)
+                __transpose_op(reshape2, perm, out=out, block=block)
             return out
 
         def __weight_normalize(g, v, dim):
@@ -240,6 +257,13 @@ class LayerHelperBase(object):
             dim=attr.dim,
             block=self.startup_program.global_block())
 
+        # keep g_param shape to be consistent with that in main_program
+        __reshape_op(
+            g_param,
+            g_param_shape,
+            out=g_param,
+            block=self.startup_program.global_block())
+
         # Add weight normalization to main_program
         g_param = self.main_program.global_block().create_parameter(
             dtype=dtype, shape=g_param_shape, **g_param_attr._to_kwargs())
@@ -254,12 +278,14 @@ class LayerHelperBase(object):
                          shape,
                          dtype,
                          is_bias=False,
-                         default_initializer=None):
+                         default_initializer=None,
+                         stop_gradient=False,
+                         type=core.VarDesc.VarType.LOD_TENSOR):
         """Create parameters for this layers.
 
            Args:
                attr: [ParamAttr] should be the parameter attribute for this parameter
-               shape: shape of the paramter
+               shape: shape of the parameter
                dtype: data type of this parameter
                is_bias: if this is a bias parameter
                default_initializer: set the default initializer for this parameter
@@ -305,17 +331,28 @@ class LayerHelperBase(object):
         if in_dygraph_mode():
             # In dygraph mode, we want the returned parameter to be
             # initialized so that it can be used imperatively.
+            # check parameter name
+            is_used = unique_name.dygraph_parameter_name_checker(attr.name)
+            if is_used:
+                raise ValueError(
+                    "parameter name [{}] have be been used. "
+                    "In dygraph mode, the name of parameter can't be same."
+                    "Please check the parameter attr value passed to self.create_parameter or "
+                    "constructor of dygraph Layers".format(attr.name))
             return self.main_program.global_block().create_parameter(
                 dtype=dtype,
                 shape=shape,
+                type=type,
+                stop_gradient=stop_gradient,
                 **attr._to_kwargs(with_initializer=True))
         else:
             self.startup_program.global_block().create_parameter(
                 dtype=dtype,
                 shape=shape,
+                type=type,
                 **attr._to_kwargs(with_initializer=True))
             return self.main_program.global_block().create_parameter(
-                dtype=dtype, shape=shape, **attr._to_kwargs())
+                dtype=dtype, shape=shape, type=type, **attr._to_kwargs())
 
     def create_variable_for_type_inference(self, dtype, stop_gradient=False):
         """Create a temporary variable that should be type inferred layer.
@@ -372,7 +409,7 @@ class LayerHelperBase(object):
         """
         assert isinstance(var, Variable)
         if in_dygraph_mode():
-            initializer(var, var.block)
+            initializer(var, self.main_program.global_block())
         else:
             self.startup_program.global_block().create_var(
                 name=var.name,

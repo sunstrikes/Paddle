@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "paddle/fluid/framework/executor.h"
-#include "paddle/fluid/operators/detail/safe_ref.h"
 #include "paddle/fluid/operators/reader/reader_op_registry.h"
 
 namespace paddle {
@@ -167,12 +166,15 @@ void CustomReader::ReadNextImpl(std::vector<framework::LoDTensor>* out) {
     tensor->set_lod(underlying_outs[i].lod());
   }
   // 2. Run the sub-block.
-  exe_.Run(program_, exe_scope, sub_block_id_, false, true);
+  exe_.Run(program_, exe_scope, sub_block_id_, false, true, {}, true);
   // 3. Copy LoDTensors from sink variables to out.
   out->resize(sink_var_names_.size());
   for (size_t i = 0; i < sink_var_names_.size(); ++i) {
-    const auto& tensor = detail::Ref(exe_scope->FindVar(sink_var_names_[i]))
-                             .Get<framework::LoDTensor>();
+    auto* var = exe_scope->FindVar(sink_var_names_[i]);
+    PADDLE_ENFORCE_NOT_NULL(var, platform::errors::NotFound(
+                                     "The variable %s is not in current scope.",
+                                     sink_var_names_[i]));
+    const auto& tensor = var->Get<framework::LoDTensor>();
     framework::TensorCopySync(tensor, platform::CPUPlace(), &(*out)[i]);
   }
   scope_.DeleteScope(exe_scope);
@@ -183,7 +185,9 @@ void CustomReader::ReadNextImpl(std::vector<framework::LoDTensor>* out) {
 }  // namespace paddle
 
 namespace ops = paddle::operators::reader;
-REGISTER_OPERATOR(create_custom_reader, ops::CreateCustomReaderOp,
-                  ops::CreateCustomReaderOpMaker, ops::CustomReaderInferShape,
-                  ops::CustomReaderInferVarType,
-                  paddle::framework::EmptyGradOpMaker)
+REGISTER_OPERATOR(
+    create_custom_reader, ops::CreateCustomReaderOp,
+    ops::CreateCustomReaderOpMaker, ops::CustomReaderInferShape,
+    ops::CustomReaderInferVarType,
+    paddle::framework::EmptyGradOpMaker<paddle::framework::OpDesc>,
+    paddle::framework::EmptyGradOpMaker<paddle::imperative::OpBase>)

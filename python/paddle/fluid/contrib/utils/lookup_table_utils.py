@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""lookup_table_utils.py will move to fluid/incubate/fleet/utils/lookup_table.py"""
 
 from __future__ import print_function
 
@@ -22,15 +23,17 @@ import paddle
 from paddle.fluid import core
 from paddle.fluid import io
 from paddle.fluid import Program
+from paddle.fluid.log_helper import get_logger
 
 __all__ = [
     "load_persistables_for_increment", "load_persistables_for_inference",
     "convert_dist_to_sparse_program"
 ]
 
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s')
-_logger = logging.getLogger("lookup_table_utils")
-_logger.setLevel(logging.INFO)
+_logger = get_logger(
+    'lookup_table_utils',
+    logging.INFO,
+    fmt='%(asctime)s-%(levelname)s: %(message)s')
 
 model_filename = "__model__"
 lookup_table_dir = "__lookup_table__"
@@ -134,7 +137,7 @@ def load_persistables_for_increment(dirname, executor, program,
                                     lookup_table_var, lookup_table_var_path):
     """
     WARNING: this function will only be used for distributed training with distributed lookup table.
-    for increment trainning, the pserver will not only load dense variables,
+    for increment training, the pserver will not only load dense variables,
     but also load the suitable lookup table var. Because of sliced lookup table
     var with HASH, we must load the correct sliced var.
 
@@ -361,7 +364,17 @@ def load_persistables_for_inference(dirname, executor, program,
                 })
             sums.append(param_var)
         global_block.append_op(
-            type='sum', inputs={"X": sums}, outputs={'Out': emb_var}, attrs={})
+            type='merge_sparse_lookup_table',
+            inputs={"X": sums},
+            outputs={'Out': emb_var},
+            attrs={})
+        global_block.append_op(
+            type='save',
+            inputs={"X": [emb_var]},
+            outputs={},
+            attrs={
+                'file_path': os.path.join(lookup_table_dirname, emb_var.name)
+            })
         global_block.append_op(type='delete_var', inputs={'X': sums})
         executor.run(convert_program)
 
@@ -404,10 +417,10 @@ def get_inference_model(main_program, feeded_var_names, target_vars):
 
     Args:
         main_program(Program|None): The original program, which will be pruned to
-                                    build the inference model. If is setted None,
+                                    build the inference model. If is set None,
                                     the default main program will be used.
                                     Default: None.
-        feeded_var_names(list[str]): Names of variables that need to be feeded data
+        feeded_var_names(list[str]): Names of variables that need to be fed data
                                      during inference.
         target_vars(list[Variable]): Variables from which we can get inference
                                      results.

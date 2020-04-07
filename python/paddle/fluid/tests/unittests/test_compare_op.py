@@ -17,6 +17,10 @@ from __future__ import print_function
 import op_test
 import unittest
 import numpy
+import numpy as np
+import paddle
+import paddle.fluid as fluid
+from paddle.fluid import Program, program_guard
 
 
 def create_test_class(op_type, typename, callback):
@@ -44,6 +48,38 @@ for _type_name in {'float32', 'float64', 'int32', 'int64'}:
     create_test_class('greater_equal', _type_name, lambda _a, _b: _a >= _b)
     create_test_class('equal', _type_name, lambda _a, _b: _a == _b)
     create_test_class('not_equal', _type_name, lambda _a, _b: _a != _b)
+
+
+class TestCompareOpError(unittest.TestCase):
+    def test_errors(self):
+        with program_guard(Program(), Program()):
+            # The input x and y of compare_op must be Variable.
+            x = fluid.layers.data(name='x', shape=[1], dtype="float32")
+            y = fluid.create_lod_tensor(
+                numpy.array([[-1]]), [[1]], fluid.CPUPlace())
+            self.assertRaises(TypeError, fluid.layers.greater_equal, x, y)
+
+
+class API_TestElementwise_Equal(unittest.TestCase):
+    def test_api(self):
+        with fluid.program_guard(fluid.Program(), fluid.Program()):
+            label = fluid.layers.assign(np.array([3, 3], dtype="int32"))
+            limit = fluid.layers.assign(np.array([3, 2], dtype="int32"))
+            out = paddle.elementwise_equal(x=label, y=limit)
+            place = fluid.CPUPlace()
+            exe = fluid.Executor(place)
+            res, = exe.run(fetch_list=[out])
+        self.assertEqual((res == np.array([True, False])).all(), True)
+
+        with fluid.program_guard(fluid.Program(), fluid.Program()):
+            label = fluid.layers.assign(np.array([3, 3], dtype="int32"))
+            limit = fluid.layers.assign(np.array([3, 3], dtype="int32"))
+            out = paddle.elementwise_equal(x=label, y=limit)
+            place = fluid.CPUPlace()
+            exe = fluid.Executor(place)
+            res, = exe.run(fetch_list=[out])
+        self.assertEqual((res == np.array([True, True])).all(), True)
+
 
 if __name__ == '__main__':
     unittest.main()

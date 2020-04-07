@@ -33,7 +33,7 @@ class LoadCombineOpKernel : public framework::OpKernel<T> {
     auto filename = ctx.Attr<std::string>("file_path");
     auto load_as_fp16 = ctx.Attr<bool>("load_as_fp16");
     auto model_from_memory = ctx.Attr<bool>("model_from_memory");
-    auto &out_var_names = ctx.Outputs("Out");
+    auto out_var_names = ctx.OutputNames("Out");
 
     PADDLE_ENFORCE_GT(
         static_cast<int>(out_var_names.size()), 0,
@@ -41,10 +41,15 @@ class LoadCombineOpKernel : public framework::OpKernel<T> {
     if (!model_from_memory) {
       std::ifstream fin(filename, std::ios::binary);
       PADDLE_ENFORCE(static_cast<bool>(fin),
-                     "Cannot open file %s for load_combine op", filename);
+                     "OP(LoadCombine) fail to open file %s, please check "
+                     "whether the model file is complete or damaged.",
+                     filename);
       LoadParamsFromBuffer(ctx, place, &fin, load_as_fp16, out_var_names);
     } else {
-      PADDLE_ENFORCE(!filename.empty(), "Cannot load file from memory");
+      PADDLE_ENFORCE(!filename.empty(),
+                     "OP(LoadCombine) fail to open file %s, please check "
+                     "whether the model file is complete or damaged.",
+                     filename);
       std::stringstream fin(filename, std::ios::in | std::ios::binary);
       LoadParamsFromBuffer(ctx, place, &fin, load_as_fp16, out_var_names);
     }
@@ -65,7 +70,10 @@ class LoadCombineOpKernel : public framework::OpKernel<T> {
       auto *tensor = out_vars[i]->GetMutable<framework::LoDTensor>();
 
       // Error checking
-      PADDLE_ENFORCE(static_cast<bool>(*buffer), "Cannot read more");
+      PADDLE_ENFORCE(
+          static_cast<bool>(*buffer),
+          "There is a problem with loading model parameters. "
+          "Please check whether the model file is complete or damaged.");
 
       // Get data from fin to tensor
       DeserializeFromStream(*buffer, tensor, dev_ctx);

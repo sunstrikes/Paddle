@@ -14,6 +14,7 @@ limitations under the License. */
 
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <string>
@@ -22,6 +23,7 @@ limitations under the License. */
 
 #include "ngraph/ngraph.hpp"
 #include "paddle/fluid/operators/ngraph/ops/op_bridge.h"
+#include "paddle/fluid/platform/enforce.h"
 #include "paddle/fluid/platform/ngraph_helper.h"
 
 namespace paddle {
@@ -56,29 +58,28 @@ static void BuildReshapeNode(
   std::shared_ptr<ngraph::Node> input =
       platform::GetInputNode(op, "X", ngb_node_map);
   auto input_shape = input->get_shape();
-  // TODO(mozga-intel) The vector of shape is not supported yet, that's
-  // asDispensable() operator"
+
   std::shared_ptr<ngraph::Node> shape =
       platform::GetInputNode(op, "Shape", ngb_node_map);
+  PADDLE_ENFORCE_EQ(shape, nullptr,
+                    platform::errors::Unimplemented(
+                        "Support for Shape input is not implemented"));
 
   auto op_attrs = framework::AttrReader(op->Attrs());
   std::vector<int> v_shape = op_attrs.Get<std::vector<int>>("shape");
-  auto out = input;
-  if (shape != nullptr) {
-    ngraph::Shape new_shape;
-    for (auto& it : shape->get_shape()) {
-      new_shape.push_back(it);
-    }
-    out = platform::NgReshaper(input, shape->get_shape());
-  } else {
-    auto out_shape = calc_output_shape(input_shape, v_shape);
-    out = platform::NgReshaper(input, out_shape);
-  }
+
+  auto out_shape = calc_output_shape(input_shape, v_shape);
+  auto out = platform::NgReshaper(input, out_shape);
+  platform::SetOutputNode(op, "Out", out, ngb_node_map);
 
   if (is_v2) {
-    platform::SetOutputNode(op, "XShape", input, ngb_node_map);
+    ngraph::Shape input_xshape(input_shape.size() + 1);
+    input_xshape[0] = 0;
+    std::copy(input_shape.begin(), input_shape.end(), input_xshape.begin() + 1);
+    auto xshape_node = std::make_shared<ngraph::op::Constant>(
+        input->get_element_type(), input_xshape, std::vector<std::string>{});
+    platform::SetOutputNode(op, "XShape", xshape_node, ngb_node_map);
   }
-  platform::SetOutputNode(op, "Out", out, ngb_node_map);
 }
 
 template <bool is_v2>
@@ -88,13 +89,17 @@ void BuildReshapeGradNode(
         std::unordered_map<std::string, std::shared_ptr<ngraph::Node>>>
         ngb_node_map) {
   auto dout = paddle::platform::GetInputNode(op, "Out@GRAD", ngb_node_map);
-  std::shared_ptr<ngraph::Node> input;
+  ngraph::Shape out_shape;
   if (is_v2) {
-    input = paddle::platform::GetInputNode(op, "XShape", ngb_node_map);
+    auto& xshape =
+        platform::GetInputNode(op, "XShape", ngb_node_map)->get_shape();
+    out_shape.resize(xshape.size() - 1);
+    std::copy(xshape.begin() + 1, xshape.end(), out_shape.begin());
   } else {
-    input = paddle::platform::GetInputNode(op, "X", ngb_node_map);
+    auto input = paddle::platform::GetInputNode(op, "X", ngb_node_map);
+    out_shape = input->get_shape();
   }
-  auto dx = platform::NgReshaper(dout, input->get_shape());
+  auto dx = platform::NgReshaper(dout, out_shape);
   paddle::platform::SetOutputNode(op, "X@GRAD", dx, ngb_node_map);
 }
 }  // namespace ngraphs

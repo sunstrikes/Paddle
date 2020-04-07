@@ -59,10 +59,22 @@ struct Argument {
 
   using unique_ptr_t = std::unique_ptr<void, std::function<void(void*)>>;
   using fusion_statis_t = std::unordered_map<std::string, int>;
-  using engine_opt_info_t = std::map<std::string, std::string>;
-  using anakin_max_shape_t = std::map<std::string, std::vector<int>>;
+  using input_shape_t = std::map<std::string, std::vector<int>>;
 
   bool Has(const std::string& key) const { return valid_fields_.count(key); }
+  // If we set the model using config.SetModelBuffer,
+  // the model and parameter will occupy additional CPU resources.
+  // Use this interface to release these resources.
+  void PartiallyRelease() {
+    if (Has("model_program_path")) {
+      if (Has("model_from_memory") && model_from_memory()) {
+        model_program_path().clear();
+        model_program_path().shrink_to_fit();
+        model_params_path().clear();
+        model_params_path().shrink_to_fit();
+      }
+    }
+  }
 
 #define DECL_ARGUMENT_FIELD(field__, Field, type__)          \
  public:                                                     \
@@ -120,7 +132,8 @@ struct Argument {
   DECL_ARGUMENT_FIELD(model_program_path, ModelProgramPath, std::string);
   DECL_ARGUMENT_FIELD(model_params_path, ModelParamsPath, std::string);
   DECL_ARGUMENT_FIELD(model_from_memory, ModelFromMemory, bool);
-  DECL_ARGUMENT_FIELD(engine_opt_info, EngineOptInfo, engine_opt_info_t);
+  DECL_ARGUMENT_FIELD(optim_cache_dir, OptimCacheDir, std::string);
+  DECL_ARGUMENT_FIELD(enable_analysis_optim, EnableAnalysisOptim, bool);
 
   // The overall graph to work on.
   DECL_ARGUMENT_UNIQUE_FIELD(main_graph, MainGraph, framework::ir::Graph);
@@ -136,9 +149,14 @@ struct Argument {
   DECL_ARGUMENT_FIELD(analysis_passes, AnalysisPasses,
                       std::vector<std::string>);
 
+  // whether to mute all logs in inference.
+  DECL_ARGUMENT_FIELD(disable_logs, DisableLogs, bool);
+
   // Pass a set of op types to enable its mkldnn kernel
   DECL_ARGUMENT_FIELD(mkldnn_enabled_op_types, MKLDNNEnabledOpTypes,
                       std::unordered_set<std::string>);
+  // The cache capacity of different input shapes for mkldnn.
+  DECL_ARGUMENT_FIELD(mkldnn_cache_capacity, MkldnnCacheCapacity, int);
 
 #ifdef PADDLE_WITH_MKLDNN
   // A set of op types to enable their quantized kernels
@@ -155,7 +173,18 @@ struct Argument {
 
   // Passed from config.
   DECL_ARGUMENT_FIELD(use_gpu, UseGPU, bool);
+  DECL_ARGUMENT_FIELD(use_fc_padding, UseFcPadding, bool);
   DECL_ARGUMENT_FIELD(gpu_device_id, GPUDeviceId, int);
+
+  // Usually use for trt dynamic shape.
+  // TRT will select the best kernel according to opt shape
+  // Setting the disable_trt_plugin_fp16 to true means that TRT plugin will not
+  // run fp16.
+  DECL_ARGUMENT_FIELD(min_input_shape, MinInputShape, input_shape_t);
+  DECL_ARGUMENT_FIELD(max_input_shape, MaxInputShape, input_shape_t);
+  DECL_ARGUMENT_FIELD(optim_input_shape, OptimInputShape, input_shape_t);
+  DECL_ARGUMENT_FIELD(disable_trt_plugin_fp16, CloseTrtPluginFp16, bool);
+
   DECL_ARGUMENT_FIELD(use_tensorrt, UseTensorRT, bool);
   DECL_ARGUMENT_FIELD(tensorrt_max_batch_size, TensorRtMaxBatchSize, int);
   DECL_ARGUMENT_FIELD(tensorrt_workspace_size, TensorRtWorkspaceSize, int);
@@ -166,24 +195,15 @@ struct Argument {
                       bool);
   DECL_ARGUMENT_FIELD(tensorrt_use_calib_mode, TensorRtUseCalibMode, bool);
 
-  DECL_ARGUMENT_FIELD(anakin_max_input_shape, AnakinMaxInputShape,
-                      anakin_max_shape_t);
-  DECL_ARGUMENT_FIELD(anakin_max_batch_size, AnakinMaxBatchSize, int);
-  DECL_ARGUMENT_FIELD(anakin_min_subgraph_size, AnakinMinSubgraphSize, int);
-  DECL_ARGUMENT_FIELD(anakin_precision_mode, AnakinPrecisionMode,
+  DECL_ARGUMENT_FIELD(lite_passes_filter, LitePassesFilter,
+                      std::vector<std::string>);
+  DECL_ARGUMENT_FIELD(lite_ops_filter, LiteOpsFilter, std::vector<std::string>);
+  DECL_ARGUMENT_FIELD(lite_precision_mode, LitePrecisionMode,
                       AnalysisConfig::Precision);
-  DECL_ARGUMENT_FIELD(anakin_auto_config_layout, AnakinAutoConfigLayout, bool);
-  DECL_ARGUMENT_FIELD(use_anakin, UseAnakin, bool);
-  DECL_ARGUMENT_FIELD(anakin_passes_filter, AnakinPassesFilter,
-                      std::vector<std::string>);
-  DECL_ARGUMENT_FIELD(anakin_ops_filter, AnakinOpsFilter,
-                      std::vector<std::string>);
 
   // Memory optimized related.
   DECL_ARGUMENT_FIELD(enable_memory_optim, EnableMemoryOptim, bool);
-  DECL_ARGUMENT_FIELD(static_memory_optim, StaticMemoryOptim, bool);
-  DECL_ARGUMENT_FIELD(static_memory_optim_force_update,
-                      StaticMemoryOptimForceUpdate, bool);
+
   // Indicate which kind of sort algorithm is used for operators, the memory
   // optimization relays on the sort algorithm.
   DECL_ARGUMENT_FIELD(memory_optim_sort_kind, MemoryOptimSortKind, int);

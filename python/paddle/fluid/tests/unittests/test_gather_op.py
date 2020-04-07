@@ -41,7 +41,7 @@ class TestGatherOp(OpTest):
         For multi-dimension input
         """
         self.x_shape = (10, 20)
-        self.x_type = "float32"
+        self.x_type = "float64"
         self.index = [1, 3, 5]
         self.index_type = "int32"
 
@@ -51,8 +51,8 @@ class TestCase1(TestGatherOp):
         """
         For one dimension input
         """
-        self.x_shape = (10)
-        self.x_type = "float32"
+        self.x_shape = (100)
+        self.x_type = "float64"
         self.index = [1, 3, 5]
         self.index_type = "int32"
 
@@ -62,8 +62,8 @@ class TestCase2(TestGatherOp):
         """
         For int64_t index type
         """
-        self.x_shape = (10)
-        self.x_type = "float32"
+        self.x_shape = (100)
+        self.x_type = "float64"
         self.index = [1, 3, 5]
         self.index_type = "int64"
 
@@ -74,9 +74,36 @@ class TestCase3(TestGatherOp):
         For other input type
         """
         self.x_shape = (10, 20)
-        self.x_type = "double"
+        self.x_type = "float64"
         self.index = [1, 3, 5]
         self.index_type = "int64"
+
+
+class TestCase4(TestGatherOp):
+    def config(self):
+        self.x_shape = (10, 20)
+        self.attrs = {'overwrite': False}
+        self.x_type = "double"
+        self.index = [1, 1]
+        self.index_type = "int32"
+
+
+class TestCase5(TestGatherOp):
+    def config(self):
+        self.x_shape = (10, 20)
+        self.attrs = {'overwrite': False}
+        self.x_type = "float64"
+        self.index = [1, 1, 3]
+        self.index_type = "int32"
+
+
+class TestCase6(TestGatherOp):
+    def config(self):
+        self.x_shape = (10, 20)
+        self.attrs = {'overwrite': True}
+        self.x_type = "float64"
+        self.index = [1, 3]
+        self.index_type = "int32"
 
 
 if __name__ == "__main__":

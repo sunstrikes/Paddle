@@ -13,13 +13,15 @@
 // limitations under the License.
 
 #include "paddle/fluid/framework/io/shell.h"
+#include "paddle/fluid/platform/enforce.h"
+#include "paddle/fluid/platform/timer.h"
 
 namespace paddle {
 namespace framework {
 
 std::shared_ptr<FILE> shell_fopen(const std::string& path,
                                   const std::string& mode) {
-#if defined _WIN32 || defined __APPLE__
+#if defined _WIN32 || defined __APPLE__ || defined PADDLE_ARM
   return nullptr;
 #else
   if (shell_verbose()) {
@@ -44,7 +46,7 @@ std::shared_ptr<FILE> shell_fopen(const std::string& path,
 // The implementation is async signal safe
 // Mostly copy from CPython code
 static int close_open_fds_internal() {
-#if defined _WIN32 || defined __APPLE__
+#if defined _WIN32 || defined __APPLE__ || defined PADDLE_ARM
   return 0;
 #else
   struct linux_dirent {
@@ -119,16 +121,12 @@ static int shell_popen_fork_internal(const char* real_cmd, bool do_read,
   close(parent_end);
 
   if (child_end != child_std_end) {
-    if (dup2(child_end, child_std_end) != child_std_end) {
-      return -1;
-    }
+    PCHECK(dup2(child_end, child_std_end) == child_std_end);
     close(child_end);
   }
 
   close_open_fds_internal();
-  if (execl("/bin/bash", "bash", "-c", real_cmd, NULL) < 0) {
-    return -1;
-  }
+  PCHECK(execl("/bin/bash", "bash", "-c", real_cmd, NULL) >= 0);
   exit(127);
 #endif
 }
@@ -194,7 +192,8 @@ std::shared_ptr<FILE> shell_popen(const std::string& cmd,
                            << ", err_no[" << *err_no << "]";
             }
             if (wstatus == -1 && errno == ECHILD) {
-              LOG(WARNING) << "errno is ECHILD";
+              // temporarily remove this warning
+              // LOG(WARNING) << "errno is ECHILD";
             }
           }};
 #endif
@@ -285,7 +284,8 @@ std::pair<std::shared_ptr<FILE>, std::shared_ptr<FILE>> shell_p2open(
             << "status[" << wstatus << "], cmd[" << cmd << "]";
 
         if (wstatus == -1 && errno == ECHILD) {
-          LOG(WARNING) << "errno is ECHILD";
+          // temporarily remove this warning
+          // LOG(WARNING) << "errno is ECHILD";
         }
       }};
 
@@ -298,23 +298,48 @@ std::pair<std::shared_ptr<FILE>, std::shared_ptr<FILE>> shell_p2open(
 #endif
 }
 
-std::string shell_get_command_output(const std::string& cmd) {
+std::string shell_get_command_output(const std::string& cmd, int time_out,
+                                     int sleep_inter, bool print_cmd) {
 #if defined _WIN32 || defined __APPLE__
-  return "";
+  PADDLE_THROW(platform::errors::Unimplemented(
+      "This function(shell_get_command_output) is not implemented under _WIN32 "
+      "or __APPLE__."));
 #else
   int err_no = 0;
+  platform::Timer timer;
   do {
+    if (print_cmd) {
+      LOG(INFO) << "exec cmd:[" << cmd << "]";
+    }
     err_no = 0;
     std::shared_ptr<FILE> pipe = shell_popen(cmd, "r", &err_no);
     string::LineFileReader reader;
 
-    if (reader.getdelim(&*pipe, 0)) {
-      pipe = nullptr;
-      if (err_no == 0) {
+    char* buf = reader.getdelim(&*pipe, 0);
+    if (err_no == 0) {
+      if (buf) {
         return reader.get();
       }
+      return "";
     }
-  } while (err_no == -1);
+
+    if (sleep_inter > 0) {
+      usleep(sleep_inter);
+    }
+
+    timer.Pause();
+    if (time_out > 0 && timer.ElapsedMS() >= time_out) {
+      PADDLE_THROW(paddle::platform::errors::ExecutionTimeout(
+          "shell_get_command_output execute  error errno:%d and try until "
+          "timeout.",
+          errno));
+      return "";
+    }
+    timer.Resume();
+
+    pipe = nullptr;
+  } while (err_no);
+
   return "";
 #endif
 }

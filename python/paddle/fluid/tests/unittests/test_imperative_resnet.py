@@ -21,9 +21,13 @@ import paddle
 import paddle.fluid as fluid
 from paddle.fluid import core
 from paddle.fluid.layer_helper import LayerHelper
-from paddle.fluid import Conv2D, Pool2D, BatchNorm, FC
+from paddle.fluid import Conv2D, Pool2D, BatchNorm, Linear
 from paddle.fluid.dygraph.base import to_variable
 from test_imperative_base import new_program_scope
+from utils import DyGraphProgramDescTracerTestHelper, is_equal_program
+from paddle.fluid.dygraph import TracedLayer
+
+#NOTE(zhiqiu): run with FLAGS_cudnn_deterministic=1
 
 batch_size = 8
 train_parameters = {
@@ -42,7 +46,7 @@ train_parameters = {
 }
 
 
-def optimizer_setting(params):
+def optimizer_setting(params, parameter_list=None):
     ls = params["learning_strategy"]
     if ls["name"] == "piecewise_decay":
         if "total_images" not in params:
@@ -56,31 +60,33 @@ def optimizer_setting(params):
         base_lr = params["lr"]
         lr = []
         lr = [base_lr * (0.1**i) for i in range(len(bd) + 1)]
-        optimizer = fluid.optimizer.SGD(learning_rate=0.01)
+        if fluid.in_dygraph_mode():
+            optimizer = fluid.optimizer.SGD(learning_rate=0.01,
+                                            parameter_list=parameter_list)
+        else:
+            optimizer = fluid.optimizer.SGD(learning_rate=0.01)
         # TODO(minqiyang): Add learning rate scheduler support to dygraph mode
         #  optimizer = fluid.optimizer.Momentum(
-    #  learning_rate=params["lr"],
-    #  learning_rate=fluid.layers.piecewise_decay(
-    #  boundaries=bd, values=lr),
-    #  momentum=0.9,
-    #  regularization=fluid.regularizer.L2Decay(1e-4))
+        #  learning_rate=params["lr"],
+        #  learning_rate=fluid.layers.piecewise_decay(
+        #  boundaries=bd, values=lr),
+        #  momentum=0.9,
+        #  regularization=fluid.regularizer.L2Decay(1e-4))
 
     return optimizer
 
 
 class ConvBNLayer(fluid.Layer):
     def __init__(self,
-                 name_scope,
                  num_channels,
                  num_filters,
                  filter_size,
                  stride=1,
                  groups=1,
                  act=None):
-        super(ConvBNLayer, self).__init__(name_scope)
+        super(ConvBNLayer, self).__init__()
 
         self._conv = Conv2D(
-            self.full_name(),
             num_channels=num_channels,
             num_filters=num_filters,
             filter_size=filter_size,
@@ -88,9 +94,10 @@ class ConvBNLayer(fluid.Layer):
             padding=(filter_size - 1) // 2,
             groups=groups,
             act=None,
-            bias_attr=None)
+            bias_attr=None,
+            use_cudnn=False)
 
-        self._batch_norm = BatchNorm(self.full_name(), num_filters, act=act)
+        self._batch_norm = BatchNorm(num_filters, act=act)
 
     def forward(self, inputs):
         y = self._conv(inputs)
@@ -100,29 +107,21 @@ class ConvBNLayer(fluid.Layer):
 
 
 class BottleneckBlock(fluid.Layer):
-    def __init__(self,
-                 name_scope,
-                 num_channels,
-                 num_filters,
-                 stride,
-                 shortcut=True):
-        super(BottleneckBlock, self).__init__(name_scope)
+    def __init__(self, num_channels, num_filters, stride, shortcut=True):
+        super(BottleneckBlock, self).__init__()
 
         self.conv0 = ConvBNLayer(
-            self.full_name(),
             num_channels=num_channels,
             num_filters=num_filters,
             filter_size=1,
             act='relu')
         self.conv1 = ConvBNLayer(
-            self.full_name(),
             num_channels=num_filters,
             num_filters=num_filters,
             filter_size=3,
             stride=stride,
             act='relu')
         self.conv2 = ConvBNLayer(
-            self.full_name(),
             num_channels=num_filters,
             num_filters=num_filters * 4,
             filter_size=1,
@@ -130,15 +129,12 @@ class BottleneckBlock(fluid.Layer):
 
         if not shortcut:
             self.short = ConvBNLayer(
-                self.full_name(),
                 num_channels=num_channels,
                 num_filters=num_filters * 4,
                 filter_size=1,
                 stride=stride)
 
         self.shortcut = shortcut
-
-        self._num_channels_out = num_filters * 4
 
     def forward(self, inputs):
         y = self.conv0(inputs)
@@ -157,8 +153,8 @@ class BottleneckBlock(fluid.Layer):
 
 
 class ResNet(fluid.Layer):
-    def __init__(self, name_scope, layers=50, class_dim=102):
-        super(ResNet, self).__init__(name_scope)
+    def __init__(self, layers=50, class_dim=102):
+        super(ResNet, self).__init__()
 
         self.layers = layers
         supported_layers = [50, 101, 152]
@@ -171,50 +167,43 @@ class ResNet(fluid.Layer):
             depth = [3, 4, 23, 3]
         elif layers == 152:
             depth = [3, 8, 36, 3]
+        num_channels = [64, 256, 512, 1024]
         num_filters = [64, 128, 256, 512]
 
         self.conv = ConvBNLayer(
-            self.full_name(),
-            num_channels=3,
-            num_filters=64,
-            filter_size=7,
-            stride=2,
-            act='relu')
+            num_channels=3, num_filters=64, filter_size=7, stride=2, act='relu')
         self.pool2d_max = Pool2D(
-            self.full_name(),
-            pool_size=3,
-            pool_stride=2,
-            pool_padding=1,
-            pool_type='max')
+            pool_size=3, pool_stride=2, pool_padding=1, pool_type='max')
 
         self.bottleneck_block_list = []
-        num_channels = 64
         for block in range(len(depth)):
             shortcut = False
             for i in range(depth[block]):
                 bottleneck_block = self.add_sublayer(
                     'bb_%d_%d' % (block, i),
                     BottleneckBlock(
-                        self.full_name(),
-                        num_channels=num_channels,
+                        num_channels=num_channels[block]
+                        if i == 0 else num_filters[block] * 4,
                         num_filters=num_filters[block],
                         stride=2 if i == 0 and block != 0 else 1,
                         shortcut=shortcut))
-                num_channels = bottleneck_block._num_channels_out
                 self.bottleneck_block_list.append(bottleneck_block)
                 shortcut = True
 
         self.pool2d_avg = Pool2D(
-            self.full_name(), pool_size=7, pool_type='avg', global_pooling=True)
+            pool_size=7, pool_type='avg', global_pooling=True)
+
+        self.pool2d_avg_output = num_filters[-1] * 4 * 1 * 1
 
         import math
         stdv = 1.0 / math.sqrt(2048 * 1.0)
 
-        self.out = FC(self.full_name(),
-                      size=class_dim,
-                      act='softmax',
-                      param_attr=fluid.param_attr.ParamAttr(
-                          initializer=fluid.initializer.Uniform(-stdv, stdv)))
+        self.out = Linear(
+            self.pool2d_avg_output,
+            class_dim,
+            act='softmax',
+            param_attr=fluid.param_attr.ParamAttr(
+                initializer=fluid.initializer.Uniform(-stdv, stdv)))
 
     def forward(self, inputs):
         y = self.conv(inputs)
@@ -222,48 +211,85 @@ class ResNet(fluid.Layer):
         for bottleneck_block in self.bottleneck_block_list:
             y = bottleneck_block(y)
         y = self.pool2d_avg(y)
+        y = fluid.layers.reshape(y, shape=[-1, self.pool2d_avg_output])
         y = self.out(y)
         return y
 
 
 class TestDygraphResnet(unittest.TestCase):
+    def reader_decorator(self, reader):
+        def _reader_imple():
+            for item in reader():
+                doc = np.array(item[0]).reshape(3, 224, 224)
+                label = np.array(item[1]).astype('int64').reshape(1)
+                yield doc, label
+
+        return _reader_imple
+
     def test_resnet_float32(self):
         seed = 90
 
         batch_size = train_parameters["batch_size"]
         batch_num = 10
 
+        traced_layer = None
+
         with fluid.dygraph.guard():
             fluid.default_startup_program().random_seed = seed
             fluid.default_main_program().random_seed = seed
 
-            resnet = ResNet("resnet")
-            optimizer = optimizer_setting(train_parameters)
+            resnet = ResNet()
+            optimizer = optimizer_setting(
+                train_parameters, parameter_list=resnet.parameters())
             np.random.seed(seed)
-            import random
-            random.seed = seed
-            train_reader = paddle.batch(
-                paddle.dataset.flowers.train(use_xmap=False),
-                batch_size=batch_size)
+
+            batch_py_reader = fluid.io.PyReader(capacity=1)
+            batch_py_reader.decorate_sample_list_generator(
+                paddle.batch(
+                    self.reader_decorator(
+                        paddle.dataset.flowers.train(use_xmap=False)),
+                    batch_size=batch_size,
+                    drop_last=True),
+                places=fluid.CPUPlace())
 
             dy_param_init_value = {}
             for param in resnet.parameters():
                 dy_param_init_value[param.name] = param.numpy()
 
-            for batch_id, data in enumerate(train_reader()):
+            helper = DyGraphProgramDescTracerTestHelper(self)
+            program = None
+
+            for batch_id, data in enumerate(batch_py_reader()):
                 if batch_id >= batch_num:
                     break
 
-                dy_x_data = np.array(
-                    [x[0].reshape(3, 224, 224) for x in data]).astype('float32')
-                y_data = np.array([x[1] for x in data]).astype('int64').reshape(
-                    batch_size, 1)
-
-                img = to_variable(dy_x_data)
-                label = to_variable(y_data)
+                img = data[0]
+                label = data[1]
                 label.stop_gradient = True
 
-                out = resnet(img)
+                out = None
+                if batch_id % 5 == 0:
+                    out, traced_layer = TracedLayer.trace(resnet, img)
+                    if program is not None:
+                        self.assertTrue(
+                            is_equal_program(program, traced_layer.program))
+
+                    traced_layer.save_inference_model(
+                        './infer_imperative_resnet')
+
+                    program = traced_layer.program
+                else:
+                    out = resnet(img)
+
+                if traced_layer is not None:
+                    resnet.eval()
+                    traced_layer._switch(is_test=True)
+                    out_dygraph = resnet(img)
+                    out_static = traced_layer([img])
+                    traced_layer._switch(is_test=False)
+                    helper.assertEachVar(out_dygraph, out_static)
+                    resnet.train()
+
                 loss = fluid.layers.cross_entropy(input=out, label=label)
                 avg_loss = fluid.layers.mean(x=loss)
 
@@ -279,7 +305,7 @@ class TestDygraphResnet(unittest.TestCase):
                 dy_grad_value = {}
                 for param in resnet.parameters():
                     if param.trainable:
-                        np_array = np.array(param._ivar._grad_ivar().value()
+                        np_array = np.array(param._grad_ivar().value()
                                             .get_tensor())
                         dy_grad_value[param.name + core.grad_var_suffix(
                         )] = np_array
@@ -298,12 +324,10 @@ class TestDygraphResnet(unittest.TestCase):
             exe = fluid.Executor(fluid.CPUPlace(
             ) if not core.is_compiled_with_cuda() else fluid.CUDAPlace(0))
 
-            resnet = ResNet("resnet")
+            resnet = ResNet()
             optimizer = optimizer_setting(train_parameters)
 
             np.random.seed(seed)
-            import random
-            random.seed = seed
             train_reader = paddle.batch(
                 paddle.dataset.flowers.train(use_xmap=False),
                 batch_size=batch_size)
@@ -342,6 +366,9 @@ class TestDygraphResnet(unittest.TestCase):
                 y_data = np.array([x[1] for x in data]).astype('int64').reshape(
                     [batch_size, 1])
 
+                if traced_layer is not None:
+                    traced_layer([static_x_data])
+
                 fetch_list = [avg_loss.name]
                 fetch_list.extend(static_param_name_list)
                 fetch_list.extend(static_grad_name_list)
@@ -364,6 +391,8 @@ class TestDygraphResnet(unittest.TestCase):
                     static_grad_value[static_grad_name_list[
                         i - grad_start_pos]] = out[i]
 
+        print("static", static_out)
+        print("dygraph", dy_out)
         self.assertTrue(np.allclose(static_out, dy_out))
 
         self.assertEqual(len(dy_param_init_value), len(static_param_init_value))

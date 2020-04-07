@@ -35,9 +35,9 @@ class TensorReader {
  public:
   TensorReader(std::ifstream &file, size_t beginning_offset,
                std::vector<int> shape, std::string name)
-      : file_(file), position(beginning_offset), shape_(shape), name_(name) {
-    numel = std::accumulate(shape_.begin(), shape_.end(), size_t{1},
-                            std::multiplies<size_t>());
+      : file_(file), position_(beginning_offset), shape_(shape), name_(name) {
+    numel_ = std::accumulate(shape_.begin(), shape_.end(), size_t{1},
+                             std::multiplies<size_t>());
   }
 
   PaddleTensor NextBatch() {
@@ -45,11 +45,11 @@ class TensorReader {
     tensor.name = name_;
     tensor.shape = shape_;
     tensor.dtype = GetPaddleDType<T>();
-    tensor.data.Resize(numel * sizeof(T));
+    tensor.data.Resize(numel_ * sizeof(T));
 
-    file_.seekg(position);
-    file_.read(static_cast<char *>(tensor.data.data()), numel * sizeof(T));
-    position = file_.tellg();
+    file_.seekg(position_);
+    file_.read(static_cast<char *>(tensor.data.data()), numel_ * sizeof(T));
+    position_ = file_.tellg();
 
     if (file_.eof()) LOG(ERROR) << name_ << ": reached end of stream";
     if (file_.fail())
@@ -60,21 +60,26 @@ class TensorReader {
 
  protected:
   std::ifstream &file_;
-  size_t position;
+  size_t position_;
   std::vector<int> shape_;
   std::string name_;
-  size_t numel;
+  size_t numel_;
 };
 
 std::shared_ptr<std::vector<PaddleTensor>> GetWarmupData(
     const std::vector<std::vector<PaddleTensor>> &test_data,
     int num_images = FLAGS_warmup_batch_size) {
   int test_data_batch_size = test_data[0][0].shape[0];
-  auto iterations_max = test_data.size();
-  PADDLE_ENFORCE(
-      static_cast<size_t>(num_images) <= iterations_max * test_data_batch_size,
-      "The requested quantization warmup data size " +
-          std::to_string(num_images) + " is bigger than all test data size.");
+  auto iterations = test_data.size();
+  auto all_test_data_size = iterations * test_data_batch_size;
+  PADDLE_ENFORCE_LE(static_cast<size_t>(num_images), all_test_data_size,
+                    platform::errors::InvalidArgument(
+                        "The requested quantization warmup data size must be "
+                        "lower or equal to the test data size. But received"
+                        "warmup size is %d and test data size is %d. Please "
+                        "use --warmup_batch_size parameter to set smaller "
+                        "warmup batch size.",
+                        num_images, all_test_data_size));
 
   PaddleTensor images;
   images.name = "image";
@@ -130,7 +135,11 @@ void SetInput(std::vector<std::vector<PaddleTensor>> *inputs,
                                      label_batch_shape, "label");
 
   auto iterations_max = total_images / batch_size;
-  for (auto i = 0; i < iterations_max; i++) {
+  auto iterations = iterations_max;
+  if (FLAGS_iterations > 0 && FLAGS_iterations < iterations_max) {
+    iterations = FLAGS_iterations;
+  }
+  for (auto i = 0; i < iterations; i++) {
     auto images = image_reader.NextBatch();
     auto labels = label_reader.NextBatch();
     inputs->emplace_back(
@@ -138,7 +147,7 @@ void SetInput(std::vector<std::vector<PaddleTensor>> *inputs,
   }
 }
 
-TEST(Analyzer_int8_resnet50, quantization) {
+TEST(Analyzer_int8_image_classification, quantization) {
   AnalysisConfig cfg;
   SetConfig(&cfg);
 
@@ -149,15 +158,18 @@ TEST(Analyzer_int8_resnet50, quantization) {
   std::vector<std::vector<PaddleTensor>> input_slots_all;
   SetInput(&input_slots_all);
 
-  // prepare warmup batch from input data read earlier
-  // warmup batch size can be different than batch size
-  std::shared_ptr<std::vector<PaddleTensor>> warmup_data =
-      GetWarmupData(input_slots_all);
+  if (FLAGS_enable_int8) {
+    // prepare warmup batch from input data read earlier
+    // warmup batch size can be different than batch size
+    std::shared_ptr<std::vector<PaddleTensor>> warmup_data =
+        GetWarmupData(input_slots_all);
 
-  // configure quantizer
-  q_cfg.EnableMkldnnQuantizer();
-  q_cfg.mkldnn_quantizer_config()->SetWarmupData(warmup_data);
-  q_cfg.mkldnn_quantizer_config()->SetWarmupBatchSize(FLAGS_warmup_batch_size);
+    // configure quantizer
+    q_cfg.EnableMkldnnQuantizer();
+    q_cfg.mkldnn_quantizer_config()->SetWarmupData(warmup_data);
+    q_cfg.mkldnn_quantizer_config()->SetWarmupBatchSize(
+        FLAGS_warmup_batch_size);
+  }
 
   CompareQuantizedAndAnalysis(&cfg, &q_cfg, input_slots_all);
 }

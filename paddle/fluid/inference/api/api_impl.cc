@@ -12,6 +12,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
 
+#include <glog/logging.h>
 #include <algorithm>
 #include <map>
 #include <set>
@@ -131,6 +132,16 @@ NativePaddlePredictor::~NativePaddlePredictor() {
 bool NativePaddlePredictor::Run(const std::vector<PaddleTensor> &inputs,
                                 std::vector<PaddleTensor> *output_data,
                                 int batch_size) {
+#ifndef PADDLE_ON_INFERENCE
+  LOG_FIRST_N(WARNING, 5) << "The NaiveExecutor can not work properly if the "
+                             "cmake flag ON_INFER is not set.";
+  LOG_FIRST_N(WARNING, 5) << "Unlike the training phase, all the scopes and "
+                             "variables will be reused to save the allocation "
+                             "overhead.";
+  LOG_FIRST_N(WARNING, 5) << "Please re-compile the inference library by "
+                             "setting the cmake flag ON_INFER=ON if you are "
+                             "running Paddle Inference";
+#endif  // PADDLE_ON_INFERENCE
   if (UNLIKELY(config_.cpu_math_library_num_threads() > 1)) {
     paddle::platform::SetNumThreads(config_.cpu_math_library_num_threads());
   }
@@ -280,13 +291,13 @@ bool NativePaddlePredictor::GetFetch(std::vector<PaddleTensor> *outputs,
     auto type = fetch.type();
     auto output = &(outputs->at(i));
     output->name = fetchs_[idx]->Input("X")[0];
-    if (type == framework::DataTypeTrait<float>::DataType) {
+    if (type == framework::DataTypeTrait<float>::DataType()) {
       GetFetchOne<float>(fetch, output);
       output->dtype = PaddleDType::FLOAT32;
-    } else if (type == framework::DataTypeTrait<int64_t>::DataType) {
+    } else if (type == framework::DataTypeTrait<int64_t>::DataType()) {
       GetFetchOne<int64_t>(fetch, output);
       output->dtype = PaddleDType::INT64;
-    } else if (type == framework::DataTypeTrait<int32_t>::DataType) {
+    } else if (type == framework::DataTypeTrait<int32_t>::DataType()) {
       GetFetchOne<int32_t>(fetch, output);
       output->dtype = PaddleDType::INT32;
     } else {

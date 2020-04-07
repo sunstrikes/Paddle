@@ -22,7 +22,7 @@
 
 namespace paddle {
 extern const std::vector<std::string> kTRTSubgraphPasses;
-extern const std::vector<std::string> kAnakinSubgraphPasses;
+extern const std::vector<std::string> kLiteSubgraphPasses;
 
 PassStrategy *AnalysisConfig::pass_builder() const {
   if (!pass_builder_.get()) {
@@ -82,23 +82,32 @@ void AnalysisConfig::DisableGpu() {
   Update();
 }
 
+void AnalysisConfig::DisableFCPadding() {
+  use_fc_padding_ = false;
+
+  Update();
+}
+
 AnalysisConfig::AnalysisConfig(const AnalysisConfig &other) {
 #define CP_MEMBER(member__) member__ = other.member__;
 
   // Model related.
   CP_MEMBER(model_dir_);
-  CP_MEMBER(prog_file_);
-  CP_MEMBER(params_file_);
   CP_MEMBER(model_from_memory_);  // the memory model reuses prog_file_ and
                                   // params_file_ fields.
-  // Gpu related.
+
+  CP_MEMBER(opt_cache_dir_);
+  prog_file_ = std::move(other.prog_file_);
+  params_file_ = std::move(other.params_file_);
+
+  CP_MEMBER(use_fc_padding_);
+  // GPU related.
   CP_MEMBER(use_gpu_);
+  CP_MEMBER(use_cudnn_);
   CP_MEMBER(device_id_);
   CP_MEMBER(memory_pool_init_size_mb_);
 
   CP_MEMBER(enable_memory_optim_);
-  CP_MEMBER(static_memory_optim_);
-  CP_MEMBER(static_memory_optim_force_update_);
   // TensorRT related.
   CP_MEMBER(use_tensorrt_);
   CP_MEMBER(tensorrt_workspace_size_);
@@ -112,18 +121,25 @@ AnalysisConfig::AnalysisConfig(const AnalysisConfig &other) {
   // MKLDNN related.
   CP_MEMBER(use_mkldnn_);
   CP_MEMBER(mkldnn_enabled_op_types_);
+  CP_MEMBER(mkldnn_cache_capacity_);
   // Quantization related.
   CP_MEMBER(use_mkldnn_quantizer_);
   CP_MEMBER(mkldnn_quantizer_config_);
+  CP_MEMBER(min_input_shape_);
+  CP_MEMBER(max_input_shape_);
+  CP_MEMBER(optim_input_shape_);
+  CP_MEMBER(disable_trt_plugin_fp16_);
 
-  CP_MEMBER(use_anakin_);
-  CP_MEMBER(anakin_max_batchsize_);
-  CP_MEMBER(anakin_max_input_shape_);
-  CP_MEMBER(anakin_min_subgraph_size_);
-  CP_MEMBER(anakin_precision_mode_);
-  CP_MEMBER(anakin_auto_config_layout_);
-  CP_MEMBER(anakin_passes_filter_);
-  CP_MEMBER(anakin_ops_filter_);
+  CP_MEMBER(use_lite_);
+  CP_MEMBER(lite_precision_mode_);
+  CP_MEMBER(lite_passes_filter_);
+  CP_MEMBER(lite_ops_filter_);
+
+  // profile related.
+  CP_MEMBER(with_profile_);
+
+  // glog related.
+  CP_MEMBER(with_glog_info_);
 
   // Ir related.
   CP_MEMBER(enable_ir_optim_);
@@ -148,6 +164,17 @@ AnalysisConfig::AnalysisConfig(const AnalysisConfig &other) {
   Update();
 }
 
+void AnalysisConfig::EnableCUDNN() {
+#ifdef PADDLE_WITH_CUDA
+  use_cudnn_ = use_gpu_;
+#else
+  LOG(ERROR) << "Please compile with CUDA first to use cuDNN";
+  use_cudnn_ = false;
+#endif
+
+  Update();
+}
+
 void AnalysisConfig::EnableMKLDNN() {
 #ifdef PADDLE_WITH_MKLDNN
   use_mkldnn_ = true;
@@ -157,6 +184,15 @@ void AnalysisConfig::EnableMKLDNN() {
 #endif
 
   Update();
+}
+
+void AnalysisConfig::SetMkldnnCacheCapacity(int capacity) {
+#ifdef PADDLE_WITH_MKLDNN
+  mkldnn_cache_capacity_ = capacity;
+#else
+  LOG(ERROR) << "Please compile with MKLDNN first to set MKLDNN Thread Id";
+  mkldnn_cache_capacity_ = 0;
+#endif
 }
 
 void AnalysisConfig::EnableMkldnnQuantizer() {
@@ -182,11 +218,10 @@ void AnalysisConfig::EnableNgraph() {
 #endif
 }
 
-std::shared_ptr<MkldnnQuantizerConfig> AnalysisConfig::mkldnn_quantizer_config()
-    const {
+MkldnnQuantizerConfig *AnalysisConfig::mkldnn_quantizer_config() const {
   PADDLE_ENFORCE_NOT_NULL(mkldnn_quantizer_config_,
                           "MkldnnQuantizer was not enabled yet.");
-  return mkldnn_quantizer_config_;
+  return mkldnn_quantizer_config_.get();
 }
 
 void AnalysisConfig::EnableTensorRtEngine(
@@ -212,6 +247,17 @@ void AnalysisConfig::EnableTensorRtEngine(
   LOG(ERROR)
       << "To use TensorRT engine, please compile inference lib with GPU first.";
 #endif
+}
+
+void AnalysisConfig::SetTRTDynamicShapeInfo(
+    std::map<std::string, std::vector<int>> min_input_shape,
+    std::map<std::string, std::vector<int>> max_input_shape,
+    std::map<std::string, std::vector<int>> optim_input_shape,
+    bool disable_trt_plugin_fp16) {
+  min_input_shape_ = min_input_shape;
+  max_input_shape_ = max_input_shape;
+  optim_input_shape_ = optim_input_shape;
+  disable_trt_plugin_fp16_ = disable_trt_plugin_fp16;
 }
 
 // TODO(Superjomn) refactor this, buggy.
@@ -248,6 +294,15 @@ void AnalysisConfig::Update() {
     for (const auto &pass : kTRTSubgraphPasses) {
       pass_builder()->AppendPass(pass);
     }
+  }
+  if (use_gpu() && use_cudnn_) {
+#ifdef PADDLE_WITH_CUDA
+    if (!enable_ir_optim_) {
+      LOG(ERROR) << "EnableCUDNN() only works when IR optimization is enabled.";
+    } else {
+      pass_builder()->EnableCUDNN();
+    }
+#endif
   }
 
   if (use_ngraph_) {
@@ -287,28 +342,23 @@ void AnalysisConfig::Update() {
   }
 
 #ifdef PADDLE_WITH_MKLDNN
-  // Do not optimize before quantization
-  if (enable_memory_optim_ && !use_mkldnn_quantizer_) {
+  // Do not optimize when mkldnn is on
+  if (enable_memory_optim_ && !use_mkldnn_) {
 #else
   if (enable_memory_optim_) {
 #endif
     pass_builder()->AppendAnalysisPass("memory_optimize_pass");
   }
 
-  if (use_anakin_) {
-    PADDLE_ENFORCE(!use_tensorrt_,
-                   "Anakin sub-graph and TensorRT sub-graph are not allowed to "
-                   "run at the same time!");
-    if (use_gpu_) {
-      LOG(INFO) << "Run Anakin GPU mode";
-    } else {
-      LOG(INFO) << "Run Anakin CPU mode";
-    }
-
+  if (use_lite_) {
+#ifndef PADDLE_WITH_LITE
+    LOG(WARNING) << "You tried to enable the lite subgraph "
+                    "but did not have the option -DWITH_LITE compiled.";
+#endif
     pass_builder()->ClearPasses();
-    for (const auto &pass : kAnakinSubgraphPasses) {
-      if (std::find(anakin_passes_filter_.begin(), anakin_passes_filter_.end(),
-                    pass) == anakin_passes_filter_.end()) {
+    for (const auto &pass : kLiteSubgraphPasses) {
+      if (std::find(lite_passes_filter_.begin(), lite_passes_filter_.end(),
+                    pass) == lite_passes_filter_.end()) {
         pass_builder()->AppendPass(pass);
       }
     }
@@ -326,6 +376,7 @@ std::string AnalysisConfig::SerializeInfoCache() {
   ss << params_file_;
 
   ss << use_gpu_;
+  ss << use_fc_padding_;
   ss << device_id_;
   ss << memory_pool_init_size_mb_;
 
@@ -335,17 +386,20 @@ std::string AnalysisConfig::SerializeInfoCache() {
   ss << tensorrt_min_subgraph_size_;
 
   ss << enable_memory_optim_;
-  ss << static_memory_optim_;
-  ss << static_memory_optim_force_update_;
 
   ss << use_ngraph_;
 
   ss << use_mkldnn_;
+  ss << mkldnn_cache_capacity_;
   for (auto &item : mkldnn_enabled_op_types_) ss << item;
   ss << ";";
 
   ss << use_mkldnn_quantizer_;
   ss << model_from_memory_;
+
+  ss << with_profile_;
+
+  ss << with_glog_info_;
 
   ss << enable_ir_optim_;
   ss << use_feed_fetch_ops_;
@@ -353,8 +407,9 @@ std::string AnalysisConfig::SerializeInfoCache() {
 
   ss << specify_input_name_;
   ss << cpu_math_library_num_threads_;
-  ss << use_anakin_;
-  ss << anakin_min_subgraph_size_;
+
+  ss << use_lite_;
+
   return ss.str();
 }
 
@@ -370,6 +425,7 @@ float AnalysisConfig::fraction_of_gpu_memory_for_pool() const {
   // Get the GPU memory details and calculate the fraction of memory for the
   // GPU memory pool.
   size_t gpu_used, gpu_available;
+  platform::SetDeviceId(device_id_);
   platform::GpuMemoryUsage(&gpu_used, &gpu_available);
   double total_gpu_memory = (gpu_used + gpu_available) / 1024. / 1024.;
   float fraction_of_gpu_memory =
@@ -380,12 +436,8 @@ float AnalysisConfig::fraction_of_gpu_memory_for_pool() const {
 #endif
 }
 
-void AnalysisConfig::EnableMemoryOptim(bool static_optim,
-                                       bool force_update_static_cache) {
+void AnalysisConfig::EnableMemoryOptim() {
   enable_memory_optim_ = true;
-  static_memory_optim_ = static_optim;
-  static_memory_optim_force_update_ = force_update_static_cache;
-
   Update();
 }
 
@@ -404,11 +456,6 @@ void AnalysisConfig::SetModelBuffer(const char *prog_buffer,
   Update();
 }
 
-void AnalysisConfig::SetEngineOptInfo(
-    std::map<std::string, std::string> engine_opt_info) {
-  engine_opt_info_ = engine_opt_info;
-}
-
 NativeConfig AnalysisConfig::ToNativeConfig() const {
   NativeConfig config;
   config.model_dir = model_dir_;
@@ -425,19 +472,33 @@ void AnalysisConfig::SwitchIrDebug(int x) {
   ir_debug_ = x;
   Update();
 }
-void AnalysisConfig::EnableAnakinEngine(
-    int max_batch_size, std::map<std::string, std::vector<int>> max_input_shape,
-    int min_subgraph_size, AnalysisConfig::Precision precision_mode,
-    bool auto_config_layout, std::vector<std::string> passes_filter,
-    std::vector<std::string> ops_filter) {
-  anakin_max_batchsize_ = max_batch_size;
-  anakin_max_input_shape_ = max_input_shape;
-  anakin_min_subgraph_size_ = min_subgraph_size;
-  anakin_passes_filter_ = passes_filter;
-  anakin_ops_filter_ = ops_filter;
-  use_anakin_ = true;
-  anakin_precision_mode_ = precision_mode;
-  anakin_auto_config_layout_ = auto_config_layout;
+
+void AnalysisConfig::EnableProfile() {
+  with_profile_ = true;
   Update();
 }
+
+void AnalysisConfig::DisableGlogInfo() {
+  with_glog_info_ = false;
+  Update();
+}
+
+void AnalysisConfig::EnableLiteEngine(
+    AnalysisConfig::Precision precision_mode,
+    const std::vector<std::string> &passes_filter,
+    const std::vector<std::string> &ops_filter) {
+  use_lite_ = true;
+  lite_precision_mode_ = precision_mode;
+  lite_passes_filter_ = passes_filter;
+  lite_ops_filter_ = ops_filter;
+  Update();
+}
+
+void AnalysisConfig::PartiallyRelease() {
+  prog_file_.clear();
+  prog_file_.shrink_to_fit();
+  params_file_.clear();
+  params_file_.shrink_to_fit();
+}
+
 }  // namespace paddle
