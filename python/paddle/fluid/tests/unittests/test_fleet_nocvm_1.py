@@ -36,11 +36,7 @@ class TestFleet1(unittest.TestCase):
         from paddle.fluid.incubate.fleet.parameter_server.pslib import fleet
         from paddle.fluid.incubate.fleet.parameter_server.pslib import PSLib
         from paddle.fluid.incubate.fleet.base.role_maker import GeneralRoleMaker
-        try:
-            import netifaces
-        except:
-            print("warning: no netifaces, skip test_pslib_1")
-            return
+
         os.environ["POD_IP"] = "127.0.0.1"
         os.environ["PADDLE_PORT"] = "36001"
         os.environ["TRAINING_ROLE"] = "TRAINER"
@@ -48,10 +44,10 @@ class TestFleet1(unittest.TestCase):
         os.environ["PADDLE_PSERVERS_IP_PORT_LIST"] = "127.0.0.1:36002"
         os.environ["PADDLE_TRAINER_ID"] = "0"
         role_maker = GeneralRoleMaker()
-        role_maker.generate_role()
+        #role_maker.generate_role()
         place = fluid.CPUPlace()
         exe = fluid.Executor(place)
-        fleet.init(role_maker)
+        #fleet.init(role_maker)
         train_program = fluid.Program()
         startup_program = fluid.Program()
         scope = fluid.Scope()
@@ -77,6 +73,27 @@ class TestFleet1(unittest.TestCase):
                 })
             adam.minimize([cost], [scope])
             fleet.run_server()
+        except:
+            print("do not support pslib test, skip")
+            return
+        try:
+            # worker should call these methods instead of server
+            # the following is only for test when with_pslib=off
+            def test_func():
+                """
+                it is only a test function
+                """
+                return True
+
+            fleet._role_maker.is_first_worker = test_func
+            fleet._role_maker._barrier_worker = test_func
+            fleet.save_model("./model_000")
+            fleet.save_one_table(0, "./model_001")
+            fleet.save_one_table(0, "./model_002", prefix="hahaha")
+            fleet.load_model("./model_0003")
+            fleet.load_one_table(0, "./model_004")
+            fleet.confirm()
+            fleet.revert()
         except:
             print("do not support pslib test, skip")
             return

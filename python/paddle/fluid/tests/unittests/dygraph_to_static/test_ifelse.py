@@ -15,10 +15,11 @@
 from __future__ import print_function
 
 import numpy as np
-import paddle.fluid as fluid
 import unittest
 
-from paddle.fluid.dygraph.jit import dygraph_to_static_func
+import paddle
+from paddle.fluid.dygraph.jit import declarative
+from paddle.fluid.dygraph.dygraph_to_static.program_translator import ProgramTranslator
 
 from ifelse_simple_func import *
 
@@ -41,19 +42,16 @@ class TestDygraphIfElse(unittest.TestCase):
         self.dyfunc = dyfunc_with_if_else
 
     def _run_static(self):
-        main_program = fluid.Program()
-        with fluid.program_guard(main_program):
-            x_v = fluid.layers.assign(self.x)
-            # Transform into static graph
-            out = dygraph_to_static_func(self.dyfunc)(x_v)
-            exe = fluid.Executor(place)
-            ret = exe.run(main_program, fetch_list=out)
-            return ret
+        return self._run_dygraph(to_static=True)
 
-    def _run_dygraph(self):
+    def _run_dygraph(self, to_static=False):
+
         with fluid.dygraph.guard(place):
             x_v = fluid.dygraph.to_variable(self.x)
-            ret = self.dyfunc(x_v)
+            if to_static:
+                ret = declarative(self.dyfunc)(x_v)
+            else:
+                ret = self.dyfunc(x_v)
             return ret.numpy()
 
     def test_ast_to_func(self):
@@ -69,16 +67,28 @@ class TestDygraphIfElse2(TestDygraphIfElse):
 class TestDygraphIfElse3(TestDygraphIfElse):
     def setUp(self):
         self.x = np.random.random([10, 16]).astype('float32')
+        self.dyfunc = dyfunc_with_if_else3
+
+
+class TestDygraphIfElseWithListGenerator(TestDygraphIfElse):
+    def setUp(self):
+        self.x = np.random.random([10, 16]).astype('float32')
+        self.dyfunc = dyfunc_with_if_else_with_list_geneator
+
+
+class TestDygraphNestedIfElse(TestDygraphIfElse):
+    def setUp(self):
+        self.x = np.random.random([10, 16]).astype('float32')
         self.dyfunc = nested_if_else
 
 
-class TestDygraphIfElse4(TestDygraphIfElse):
+class TestDygraphNestedIfElse2(TestDygraphIfElse):
     def setUp(self):
         self.x = np.random.random([10, 16]).astype('float32')
         self.dyfunc = nested_if_else_2
 
 
-class TestDygraphIfElse5(TestDygraphIfElse):
+class TestDygraphNestedIfElse3(TestDygraphIfElse):
     def setUp(self):
         self.x = np.random.random([10, 16]).astype('float32')
         self.dyfunc = nested_if_else_3
@@ -176,6 +186,12 @@ class TestDygraphIfElseWithClassVar(TestDygraphIfElse):
         self.dyfunc = if_with_class_var
 
 
+class TestDygraphIfTensor(TestDygraphIfElse):
+    def setUp(self):
+        self.x = np.random.random([10, 16]).astype('float32')
+        self.dyfunc = if_tensor_case
+
+
 class TestDygraphIfElseNet(unittest.TestCase):
     """
     TestCase for the transformation from control flow `if/else`
@@ -187,18 +203,15 @@ class TestDygraphIfElseNet(unittest.TestCase):
         self.Net = NetWithControlFlowIf
 
     def _run_static(self):
-        main_program = fluid.Program()
-        with fluid.program_guard(main_program):
-            net = self.Net()
-            x_v = fluid.layers.assign(self.x)
-            # Transform into static graph
-            out = net(x_v)
-            exe = fluid.Executor(place)
-            exe.run(fluid.default_startup_program())
-            ret = exe.run(main_program, fetch_list=out)
-            return ret[0]
+        return self._run(to_static=True)
 
     def _run_dygraph(self):
+        return self._run(to_static=False)
+
+    def _run(self, to_static=False):
+        prog_trans = ProgramTranslator()
+        prog_trans.enable(to_static)
+
         with fluid.dygraph.guard(place):
             net = self.Net()
             x_v = fluid.dygraph.to_variable(self.x)
@@ -209,12 +222,18 @@ class TestDygraphIfElseNet(unittest.TestCase):
         self.assertTrue((self._run_dygraph() == self._run_static()).all())
 
 
+# Test to call function ahead caller.
+def relu(x):
+    return fluid.layers.relu(x)
+
+
 def call_external_func(x, label=None):
-    if fluid.layers.mean(x).numpy()[0] > 5:
+    if fluid.layers.mean(x) < 0:
         x_v = x - 1
     else:
         x_v = add_fn(x)
 
+    x_v = relu(x_v)
     if label is not None:
         loss = loss_fn(x_v, label)
         return loss
@@ -228,23 +247,99 @@ class TestAst2FuncWithExternalFunc(TestDygraphIfElse):
 
 
 class NetWithExternalFunc(fluid.dygraph.Layer):
-    @dygraph_to_static_func
+    @declarative
     def forward(self, x, label=None):
-        if fluid.layers.mean(x).numpy()[0] > 5:
+        if fluid.layers.mean(x) < 0:
             x_v = x - 1
         else:
             x_v = add_fn(x)
 
+        x_v = softmax(x_v)
         if label is not None:
             loss = loss_fn(x_v, label)
             return loss
         return x_v
 
 
+# Test to call function behind caller.
+def softmax(x):
+    return fluid.layers.softmax(x)
+
+
 class TestNetWithExternalFunc(TestDygraphIfElseNet):
     def setUp(self):
         self.x = np.random.random([10, 16]).astype('float32')
         self.Net = NetWithExternalFunc
+
+
+class DiffModeNet1(paddle.nn.Layer):
+    def __init__(self, mode):
+        super(DiffModeNet1, self).__init__()
+        self.mode = mode
+
+    @paddle.jit.to_static
+    def forward(self, x, y):
+        if self.mode == 'train':
+            out = x + y
+        elif self.mode == 'infer':
+            out = x - y
+        else:
+            raise ValueError('Illegal mode')
+        return out
+
+
+class DiffModeNet2(paddle.nn.Layer):
+    def __init__(self, mode):
+        super(DiffModeNet2, self).__init__()
+        self.mode = mode
+
+    @paddle.jit.to_static
+    def forward(self, x, y):
+        if self.mode == 'train':
+            out = x + y
+            return out
+        elif self.mode == 'infer':
+            out = x - y
+            return out
+        else:
+            raise ValueError('Illegal mode')
+
+
+class TestDiffModeNet(unittest.TestCase):
+    """
+    TestCase for the net with different modes
+    """
+
+    def setUp(self):
+        self.x = paddle.randn([10, 16], 'float32')
+        self.y = paddle.randn([10, 16], 'float32')
+        self.init_net()
+
+    def init_net(self):
+        self.Net = DiffModeNet1
+
+    def _run(self, mode, to_static):
+        prog_trans = ProgramTranslator()
+        prog_trans.enable(to_static)
+
+        net = self.Net(mode)
+        ret = net(self.x, self.y)
+        return ret.numpy()
+
+    def test_train_mode(self):
+        self.assertTrue((self._run(
+            mode='train', to_static=True) == self._run(
+                mode='train', to_static=False)).all())
+
+    def test_infer_mode(self):
+        self.assertTrue((self._run(
+            mode='infer', to_static=True) == self._run(
+                mode='infer', to_static=False)).all())
+
+
+class TestDiffModeNet2(TestDiffModeNet):
+    def init_net(self):
+        self.Net = DiffModeNet2
 
 
 if __name__ == '__main__':

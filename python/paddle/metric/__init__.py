@@ -12,17 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# TODO: define the functions to calculate metric in this directory 
-# __all__ = ['Accuracy',
-#            'Auc',
-#            'ChunkEvaluator',
-#            'CompositeMetric',
-#            'DetectionMAP',
-#            'EditDistance',
-#            'Precesion',
-#            'Recall',
-#            'accuracy',
-#            'auc',
-#            'chunk_eval',
-#            'cos_sim',
-#            'mean_iou']
+from .metrics import *
+from . import metrics
+
+from ..fluid.layers.nn import chunk_eval, mean_iou
+
+__all__ = metrics.__all__ + [
+    'chunk_eval',
+    'mean_iou',
+]

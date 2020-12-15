@@ -210,6 +210,23 @@ void prune_impl(const proto::ProgramDesc& input, proto::ProgramDesc* output,
       should_run.push_back(true);
     } else {
       should_run.push_back(false);
+      // If the output of an op modifies feed vars, the op should not clip.
+      // For example, in the transformer structure, the third parameter returned
+      // by beam_search op is generally assigned to a feed var. Cutting the
+      // assign op will cause an error.
+      if (parent_block_id != -1) {
+        bool flag = false;
+        for (auto& var : op_desc.outputs()) {
+          for (auto& argu : var.arguments()) {
+            if (feed_var_names.count(argu)) {
+              flag = true;
+            }
+          }
+        }
+        if (flag) {
+          should_run.back() = true;
+        }
+      }
     }
   }
 
@@ -405,8 +422,8 @@ std::tuple<framework::ProgramDesc, std::map<int, int>> PruneBackward(
   for (size_t i = 0; i < origin_clone.Size(); i++) {
     auto block_ops = origin_clone.Block(i).AllOps();
     for (auto op : block_ops) {
-      int op_role = boost::get<int>(
-          op->GetAttr(OpProtoAndCheckerMaker::OpRoleAttrName()));
+      int op_role = BOOST_GET_MUTABLE(
+          int, op->GetAttr(OpProtoAndCheckerMaker::OpRoleAttrName()));
       if (op_role == (static_cast<int>(OpRole::kBackward) |
                       static_cast<int>(OpRole::kLoss))) {
         op->SetIsTarget(false);

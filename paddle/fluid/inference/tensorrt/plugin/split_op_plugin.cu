@@ -45,8 +45,17 @@ __device__ int upper_bound(T const* vals, int n, T const& key) {
 
 nvinfer1::Dims SplitPlugin::getOutputDimensions(
     int index, const nvinfer1::Dims* input_dims, int num_inputs) {
-  PADDLE_ENFORCE_EQ(num_inputs, 1);
-  PADDLE_ENFORCE_LT(index, this->getNbOutputs());
+  PADDLE_ENFORCE_EQ(num_inputs, 1,
+                    platform::errors::InvalidArgument(
+                        "Invalid number of inputs of split TRT plugin. "
+                        "Expected 1, received %d.",
+                        num_inputs));
+  PADDLE_ENFORCE_LT(
+      index, this->getNbOutputs(),
+      platform::errors::InvalidArgument(
+          "Index of output should be less than the total number of outputs in "
+          "split TensorRT plugin. Received index = %d >= total outputs = %d",
+          index, this->getNbOutputs()));
 
   nvinfer1::Dims output_dims = input_dims[0];
   output_dims.d[axis_] = output_length_.at(index);
@@ -54,7 +63,11 @@ nvinfer1::Dims SplitPlugin::getOutputDimensions(
 }
 
 int SplitPlugin::initialize() {
-  PADDLE_ENFORCE_LE(axis_, nvinfer1::Dims::MAX_DIMS);
+  PADDLE_ENFORCE_LE(axis_, nvinfer1::Dims::MAX_DIMS,
+                    platform::errors::InvalidArgument(
+                        "Axis dimension exceeds max dimension in TensorRT. "
+                        "Received axis = %d > MAX_DIMS = %d",
+                        axis_, nvinfer1::Dims::MAX_DIMS));
   // notice input dims is [C, H, W]
   nvinfer1::Dims dims = this->getInputDims(0);
   outer_rows_ = 1;
@@ -132,9 +145,16 @@ int SplitPlugin::enqueue(int batchSize, const void* const* inputs,
 #if IS_TRT_VERSION_GE(6000)
 int SplitPluginDynamic::initialize() { return 0; }
 
-size_t SplitPluginDynamic::getSerializationSize() const { return 0; }
+size_t SplitPluginDynamic::getSerializationSize() const {
+  return SerializedSize(axis_) + SerializedSize(output_length_) +
+         SerializedSize(with_fp16_);
+}
 
-void SplitPluginDynamic::serialize(void* buffer) const {}
+void SplitPluginDynamic::serialize(void* buffer) const {
+  SerializeValue(&buffer, axis_);
+  SerializeValue(&buffer, output_length_);
+  SerializeValue(&buffer, with_fp16_);
+}
 
 nvinfer1::DimsExprs SplitPluginDynamic::getOutputDimensions(
     int output_index, const nvinfer1::DimsExprs* inputs, int nb_inputs,
@@ -159,7 +179,7 @@ bool SplitPluginDynamic::supportsFormatCombination(
     int nb_outputs) {
   PADDLE_ENFORCE_NOT_NULL(
       in_out, platform::errors::InvalidArgument(
-                  "The input of swish plugin shoule not be nullptr."));
+                  "The input of split plugin should not be nullptr."));
 
   PADDLE_ENFORCE_LT(
       pos, nb_inputs + nb_outputs,
@@ -170,14 +190,14 @@ bool SplitPluginDynamic::supportsFormatCombination(
 
   const nvinfer1::PluginTensorDesc& in = in_out[pos];
   if (pos == 0) {
-#ifdef SUPPORTS_CUDA_FP16
-    return (in.type == nvinfer1::DataType::kFLOAT ||
-            in.type == nvinfer1::DataType::kHALF) &&
-           (in.format == nvinfer1::TensorFormat::kLINEAR);
-#else
-    return (in.type == nvinfer1::DataType::kFLOAT) &&
-           (in.format == nvinfer1::TensorFormat::kLINEAR);
-#endif
+    if (with_fp16_) {
+      return (in.type == nvinfer1::DataType::kFLOAT ||
+              in.type == nvinfer1::DataType::kHALF) &&
+             (in.format == nvinfer1::TensorFormat::kLINEAR);
+    } else {
+      return (in.type == nvinfer1::DataType::kFLOAT) &&
+             (in.format == nvinfer1::TensorFormat::kLINEAR);
+    }
   }
   const nvinfer1::PluginTensorDesc& prev = in_out[pos - 1];
   // output
@@ -221,6 +241,7 @@ int SplitPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* input_desc,
 
   auto input_type = input_desc[0].type;
   if (input_type == nvinfer1::DataType::kFLOAT) {
+    VLOG(1) << "TRT Plugin DataType selected. Split-->fp32";
     thrust::device_vector<float*> d_output_ptrs;
     d_output_ptrs.resize(this->getNbOutputs(), nullptr);
 
@@ -228,18 +249,15 @@ int SplitPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* input_desc,
     float* const* h_odatas = reinterpret_cast<float* const*>(outputs);
     float** output_ptrs = thrust::raw_pointer_cast(&d_output_ptrs[0]);
 
-    PADDLE_ENFORCE_CUDA_SUCCESS(
-        cudaMemcpyAsync(output_ptrs, h_odatas,
-                        d_output_ptrs.size() * sizeof(float*),
-                        cudaMemcpyHostToDevice, stream),
-        platform::errors::External(
-            "CUDA Memcpy failed during split plugin run."));
+    PADDLE_ENFORCE_CUDA_SUCCESS(cudaMemcpyAsync(
+        output_ptrs, h_odatas, d_output_ptrs.size() * sizeof(float*),
+        cudaMemcpyHostToDevice, stream));
 
     split_kernel<<<grid, block, 0, stream>>>(
         d_segment_offsets.size(), d_segment_offsets_ptr, input_ptr, output_ptrs,
         inner_cols, axis_shape, outer_rows);
   } else if (input_type == nvinfer1::DataType::kHALF) {
-#ifdef SUPPORTS_CUDA_FP16
+    VLOG(1) << "TRT Plugin DataType selected. Split-->fp16";
     thrust::device_vector<half*> d_output_ptrs;
     d_output_ptrs.resize(this->getNbOutputs(), nullptr);
 
@@ -247,20 +265,13 @@ int SplitPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* input_desc,
     half* const* h_odatas = reinterpret_cast<half* const*>(outputs);
     half** output_ptrs = thrust::raw_pointer_cast(&d_output_ptrs[0]);
 
-    PADDLE_ENFORCE_CUDA_SUCCESS(
-        cudaMemcpyAsync(output_ptrs, h_odatas,
-                        d_output_ptrs.size() * sizeof(half*),
-                        cudaMemcpyHostToDevice, stream),
-        platform::errors::External(
-            "CUDA Memcpy failed during split plugin run."));
+    PADDLE_ENFORCE_CUDA_SUCCESS(cudaMemcpyAsync(
+        output_ptrs, h_odatas, d_output_ptrs.size() * sizeof(half*),
+        cudaMemcpyHostToDevice, stream));
 
     split_kernel<<<grid, block, 0, stream>>>(
         d_segment_offsets.size(), d_segment_offsets_ptr, input_ptr, output_ptrs,
         inner_cols, axis_shape, outer_rows);
-#else
-    PADDLE_THROW(platform::errors::Fatal(
-        "The cuda archs you specific should greater than 600."));
-#endif
   }
   return cudaGetLastError() != cudaSuccess;
 }

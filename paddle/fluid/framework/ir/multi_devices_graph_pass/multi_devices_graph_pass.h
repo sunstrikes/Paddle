@@ -20,17 +20,32 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
 #include "paddle/fluid/framework/details/build_strategy.h"
 #include "paddle/fluid/framework/details/multi_devices_helper.h"
 #include "paddle/fluid/framework/ir/graph.h"
 
 namespace paddle {
+namespace framework {
+namespace details {
+class OpHandleBase;
+struct VarHandle;
+}  // namespace details
+namespace ir {
+class Graph;
+}  // namespace ir
+}  // namespace framework
+}  // namespace paddle
+
+namespace paddle {
 namespace platform {
 class NCCLContextMap;
+class NCCLCommunicator;
 }
 
 namespace framework {
 class Scope;
+
 namespace ir {
 
 constexpr char kLossVarName[] = "loss_var_name";
@@ -93,6 +108,8 @@ class MultiDevSSAGraphBuilderBase : public ir::Pass {
 
   void CreateOpHandleIOs(ir::Graph *result, ir::Node *node,
                          size_t device_id) const;
+
+  void CreateIsolatedVarNode(ir::Graph *result, ir::Node *var_node) const;
 
 #if defined(PADDLE_WITH_NCCL)
   mutable platform::NCCLContextMap *nccl_ctxs_{nullptr};

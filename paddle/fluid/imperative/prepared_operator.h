@@ -17,11 +17,22 @@
 #include <string>
 #include <utility>
 #include <vector>
+
 #include "paddle/fluid/framework/data_transform.h"
 #include "paddle/fluid/framework/op_kernel_type.h"
 #include "paddle/fluid/framework/operator.h"
 #include "paddle/fluid/imperative/layer.h"
 #include "paddle/fluid/imperative/type_defs.h"
+
+namespace paddle {
+namespace framework {
+class Tensor;
+class Variable;
+}  // namespace framework
+namespace platform {
+class DeviceContext;
+}  // namespace platform
+}  // namespace paddle
 
 namespace paddle {
 namespace imperative {
@@ -47,24 +58,12 @@ class PreparedOp {
                             const platform::Place& place,
                             const framework::AttributeMap& attrs);
 
-  inline platform::DeviceContext* GetDeviceContext() const { return dev_ctx_; }
-
   void Run(const NameVarMap<VarBase>& in, const NameVarMap<VarBase>& out,
            const framework::AttributeMap& attrs);
 
   void Run(const NameVarMap<VariableWrapper>& ins,
            const NameVarMap<VariableWrapper>& outs,
            const framework::AttributeMap& attrs);
-
-  static void PrepareData(const platform::Place& place,
-                          const NameVarMap<VarBase>& ins,
-                          const framework::OperatorWithKernel& op,
-                          const framework::OpKernelType& expected_kernel_key);
-
-  static void PrepareData(const platform::Place& place,
-                          const NameVarMap<VariableWrapper>& ins,
-                          const framework::OperatorWithKernel& op,
-                          const framework::OpKernelType& expected_kernel_key);
 
  private:
   const framework::OperatorBase& op_;

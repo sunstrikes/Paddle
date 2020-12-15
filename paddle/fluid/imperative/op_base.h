@@ -42,13 +42,25 @@ class OpBase {
 
   ~OpBase() { VLOG(3) << "Destruct Op: " << Type(); }
 
-  const std::string& Type() const { return op_->Type(); }
+  const std::string& Type() const {
+    return op_ ? op_->Type() : UnknownOpType();
+  }
 
   const framework::AttributeMap& Attrs() const { return attrs_; }
 
-  const framework::OpInfo& Info() const { return op_->Info(); }
+  const framework::OpInfo& Info() const {
+    PADDLE_ENFORCE_NOT_NULL(op_, platform::errors::PreconditionNotMet(
+                                     "OpBase::Info() should be called after "
+                                     "OpBase::SetType() is called"));
+    return op_->Info();
+  }
 
-  const framework::OperatorBase& InnerOp() const { return *op_; }
+  const framework::OperatorBase& InnerOp() const {
+    PADDLE_ENFORCE_NOT_NULL(op_, platform::errors::PreconditionNotMet(
+                                     "OpBase::InnerOp() should be called after "
+                                     "OpBase::SetType() is called"));
+    return *op_;
+  }
 
   void ClearBackwardTrace();
 
@@ -63,7 +75,7 @@ class OpBase {
   void SetType(const std::string& type);
 
   void CheckAttrs() {
-    auto& info = op_->Info();
+    auto& info = Info();
     if (info.Checker() != nullptr) {
       info.Checker()->Check(&attrs_, true);
     }
@@ -108,7 +120,7 @@ class OpBase {
 
   template <typename T>
   inline const T& Attr(const std::string& name) const {
-    return boost::get<T>(GetAttr(name));
+    return BOOST_GET_CONST(T, GetAttr(name));
   }
 
   size_t id() const { return id_; }
@@ -151,6 +163,12 @@ class OpBase {
                   const platform::Place& place);
 
  private:
+  static const std::string& UnknownOpType() {
+    static std::string kUnknownOpType{"unknown"};
+    return kUnknownOpType;
+  }
+
+ private:
   NameVarMap<VariableWrapper> ins_;
   NameVarMap<VariableWrapper> outs_;
   framework::AttributeMap attrs_;
@@ -158,7 +176,7 @@ class OpBase {
   platform::Place place_;
   size_t id_{-1UL};
 
-  std::vector<std::function<void()>> backward_hooks_;
+  std::weak_ptr<InteriorVarHookPipeline> pre_hooks_;
 };
 
 class GradOpNode {

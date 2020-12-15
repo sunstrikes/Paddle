@@ -16,6 +16,7 @@ from __future__ import print_function
 import numpy as np
 import unittest
 
+import paddle
 import paddle.fluid as fluid
 import paddle.fluid.core as core
 import paddle.fluid.layers as layers
@@ -23,6 +24,8 @@ import paddle.fluid.framework as framework
 from paddle.fluid.executor import Executor
 from paddle.fluid.framework import Program, program_guard
 from paddle.fluid.backward import append_backward
+
+paddle.enable_static()
 
 
 class TestApiWhileLoop(unittest.TestCase):
@@ -232,7 +235,52 @@ class TestApiWhileLoop_Backward(unittest.TestCase):
                             'x': feed_x},
                       fetch_list=[mean.name, i.grad_name])
         self.assertTrue(np.allclose(np.asarray(res[0]), data))
-        self.assertTrue(np.allclose(np.asarray(res[1]), i_grad))
+        self.assertTrue(
+            np.allclose(np.asarray(res[1]), i_grad),
+            msg=" \nres = \n{} \n\n ans = \n{}".format(res[1], i_grad))
+
+    def test_while_loop_backward2(self):
+        def cond(i, x):
+            return i < 3
+
+        def body(i, x):
+            x = x * i
+            i = i + 1
+            return [i, x]
+
+        main_program = Program()
+        startup_program = Program()
+        with fluid.program_guard(main_program, startup_program):
+            i = fluid.data(name='i', shape=[1], dtype='float32')
+            i.stop_gradient = False
+            x = fluid.data(name='x', shape=[1], dtype='float32')
+            x.stop_gradient = False
+
+            out = layers.while_loop(cond, body, [i, x])
+            mean = layers.mean(out[1])
+            append_backward(mean)
+
+        place = fluid.CUDAPlace(0) if core.is_compiled_with_cuda(
+        ) else fluid.CPUPlace()
+        exe = fluid.Executor(place)
+
+        feed_i = np.ones(1).astype('float32')
+        feed_x = np.ones(1).astype('float32')
+        data = np.asarray([2]).astype('float32')
+        i_grad = np.asarray([3]).astype('float32')
+        x_grad = np.asarray([2]).astype('float32')
+
+        res = exe.run(main_program,
+                      feed={'i': feed_i,
+                            'x': feed_x},
+                      fetch_list=[mean.name, i.grad_name, x.grad_name])
+        self.assertTrue(np.allclose(np.asarray(res[0]), data))
+        self.assertTrue(
+            np.allclose(np.asarray(res[1]), i_grad),
+            msg=" \nres = \n{} \n\n ans = \n{}".format(res[1], i_grad))
+        self.assertTrue(
+            np.allclose(np.asarray(res[2]), x_grad),
+            msg=" \nres = \n{} \n\n ans = \n{}".format(res[2], x_grad))
 
 
 class TestApiWhileLoop_NestedWithBackwardAndLoDTensorArray(unittest.TestCase):
@@ -410,7 +458,7 @@ class TestApiWhileLoop_Error(unittest.TestCase):
             ten = layers.fill_constant(shape=[1], dtype='int64', value=10)
             ten_2d = layers.fill_constant(shape=[2, 2], dtype='int64', value=10)
 
-            # The type of `cond` in Op(while_loop) must be callable 
+            # The type of `cond` in Op(while_loop) must be callable
             def type_error_cond():
                 out = layers.while_loop(data, body, [data_1d])
 
@@ -492,6 +540,34 @@ class TestApiWhileLoop_Error(unittest.TestCase):
 
             self.assertRaises(ValueError,
                               value_error_body_returns_with_mutable_list)
+
+
+class TestApiWhileLoopSliceInBody(unittest.TestCase):
+    def test_var_slice(self):
+        def cond(z, i):
+            return i + 1 <= x_shape[0]
+
+        def body(z, i):
+            z = z + x[i]
+            i += 1
+            return z, i
+
+        main_program = Program()
+        startup_program = Program()
+        with program_guard(main_program, startup_program):
+            x = fluid.layers.data(name='x', shape=[5], dtype='int32')
+            z = fluid.layers.fill_constant([1], 'int32', 0)
+            x_shape = fluid.layers.shape(x)
+            i = fluid.layers.fill_constant([1], 'int32', 0)
+            z, _ = fluid.layers.while_loop(cond, body, [z, i])
+
+        place = fluid.CUDAPlace(0) if core.is_compiled_with_cuda(
+        ) else fluid.CPUPlace()
+        exe = fluid.Executor(place)
+
+        np_x = np.array([1, 2, 3, 4, 5], dtype='int32')
+        res = exe.run(main_program, feed={'x': np_x}, fetch_list=[z])
+        self.assertTrue(np.array_equal(res[0], [np.sum(np_x)]))
 
 
 if __name__ == '__main__':

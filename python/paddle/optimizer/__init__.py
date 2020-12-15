@@ -12,32 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# TODO: define all optimizers in this directory, 
-# __all__ = ['Adadelta',
-#            'AdadeltaOptimizer',
-#            'Adagrad',
-#            'AdagradOptimizer',
-#            'Adam',
-#            'Adamax',
-#            'AdamaxOptimizer',
-#            'AdamOptimizer',
-#            'DecayedAdagrad',
-#            'DecayedAdagradOptimizer',
-#            'DGCMomentumOptimizer',
-#            'Dpsgd',
-#            'DpsgdOptimizer',
-#            'ExponentialMovingAverage',
-#            'Ftrl',
-#            'FtrlOptimizer',
-#            'LambOptimizer',
-#            'LarsMomentum',
-#            'LarsMomentumOptimizer',
-#            'LookaheadOptimizer',
-#            'ModelAverage',
-#            'Momentum',
-#            'MomentumOptimizer',
-#            'PipelineOptimizer',
-#            'RecomputeOptimizer',
-#            'RMSPropOptimizer',
-#            'SGD',
-#            'SGDOptimizer']
+__all__ = [
+    'Optimizer', 'Adagrad', 'Adam', 'AdamW', 'Adamax', 'RMSProp', 'Adadelta',
+    'SGD', 'Momentum', 'Lamb', 'lr'
+]
+
+from .optimizer import Optimizer
+from .adagrad import Adagrad
+from .adam import Adam
+from .adamw import AdamW
+from .adamax import Adamax
+from .rmsprop import RMSProp
+from .adadelta import Adadelta
+from .sgd import SGD
+from .momentum import Momentum
+from .lamb import Lamb
+from . import lr

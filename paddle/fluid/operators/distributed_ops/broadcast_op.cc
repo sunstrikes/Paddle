@@ -26,10 +26,12 @@ class BroadcastOp : public framework::OperatorWithKernel {
   using framework::OperatorWithKernel::OperatorWithKernel;
 
   void InferShape(framework::InferShapeContext* ctx) const override {
-    PADDLE_ENFORCE(ctx->HasInput("X"),
-                   "Input(X) of BroadcastOp should not be null.");
-    PADDLE_ENFORCE(ctx->HasOutput("Out"),
-                   "Output(Output) of ConvOp should not be null.");
+    PADDLE_ENFORCE_EQ(ctx->HasInput("X"), true,
+                      platform::errors::InvalidArgument(
+                          "Input(X) of BroadcastOp should not be null."));
+    PADDLE_ENFORCE_EQ(ctx->HasOutput("Out"), true,
+                      platform::errors::InvalidArgument(
+                          "Output(Output) of ConvOp should not be null."));
   }
 };
 
@@ -56,7 +58,8 @@ template <typename T>
 class BroadcastOpKernel : public framework::OpKernel<T> {
  public:
   void Compute(const framework::ExecutionContext& ctx) const override {
-    PADDLE_THROW("Broadcast op can run on gpu place only for now.");
+    PADDLE_THROW(platform::errors::PreconditionNotMet(
+        "Broadcast op can run on gpu place only for now."));
   }
 };
 

@@ -13,8 +13,16 @@
 // limitations under the License.
 
 #include "paddle/fluid/framework/details/scale_loss_grad_op_handle.h"
+
 #include <string>
+
 #include "paddle/fluid/platform/profiler.h"
+
+namespace paddle {
+namespace framework {
+class Tensor;
+}  // namespace framework
+}  // namespace paddle
 
 namespace paddle {
 namespace framework {
@@ -54,7 +62,7 @@ struct ScaleLossGradFunctor {
 #ifdef PADDLE_WITH_CUDA
       OutT cast_coeff = static_cast<OutT>(coeff_);
       auto stream = static_cast<platform::CUDADeviceContext *>(ctx_)->stream();
-      memory::Copy(boost::get<platform::CUDAPlace>(place_), out_data,
+      memory::Copy(BOOST_GET_CONST(platform::CUDAPlace, place_), out_data,
                    platform::CPUPlace(), &cast_coeff, SizeOfType(out_dtype_),
                    stream);
       VLOG(10) << place_ << "RUN Scale loss grad op";

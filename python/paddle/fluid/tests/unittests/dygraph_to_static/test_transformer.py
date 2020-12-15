@@ -13,30 +13,31 @@
 # limitations under the License.
 
 import logging
-import numpy as np
-import time
 import os
+import time
 import unittest
 
+import numpy as np
+import paddle
 import paddle.fluid as fluid
 
 import transformer_util as util
-from transformer_dygraph_model import position_encoding_init
-from transformer_dygraph_model import Transformer
-from transformer_dygraph_model import CrossEntropyCriterion
+from transformer_dygraph_model import CrossEntropyCriterion, Transformer, position_encoding_init
 
 trainer_count = 1
 place = fluid.CUDAPlace(0) if fluid.is_compiled_with_cuda() else fluid.CPUPlace(
 )
 SEED = 10
-step_num = 10
+STEP_NUM = 10
 
 
 def train_static(args, batch_generator):
+    paddle.enable_static()
+    paddle.seed(SEED)
+    paddle.framework.random._manual_program_seed(SEED)
     train_prog = fluid.Program()
     startup_prog = fluid.Program()
-    train_prog.random_seed = SEED
-    startup_prog.random_seed = SEED
+
     with fluid.program_guard(train_prog, startup_prog):
         with fluid.unique_name.guard():
             # define input and reader
@@ -109,7 +110,7 @@ def train_static(args, batch_generator):
                 else:
                     logging.info(
                         "step_idx: %d, epoch: %d, batch: %d, avg loss: %f, "
-                        "normalized loss: %f, ppl: %f, speed: %.2f step/s" %
+                        "normalized loss: %f, ppl: %f, speed: %.2f steps/s" %
                         (step_idx, pass_id, batch_id, total_avg_cost,
                          total_avg_cost - loss_normalizer,
                          np.exp([min(total_avg_cost, 100)]),
@@ -118,7 +119,7 @@ def train_static(args, batch_generator):
             batch_id += 1
             step_idx += 1
             total_batch_num = total_batch_num + 1
-            if step_idx == step_num:
+            if step_idx == STEP_NUM:
                 if args.save_dygraph_model_path:
                     model_path = os.path.join(args.save_static_model_path,
                                               "transformer")
@@ -130,8 +131,8 @@ def train_static(args, batch_generator):
 def train_dygraph(args, batch_generator):
     with fluid.dygraph.guard(place):
         if SEED is not None:
-            fluid.default_main_program().random_seed = SEED
-            fluid.default_startup_program().random_seed = SEED
+            paddle.seed(SEED)
+            paddle.framework.random._manual_program_seed(SEED)
         # define data loader
         train_loader = fluid.io.DataLoader.from_generator(capacity=10)
         train_loader.set_batch_generator(batch_generator, places=place)
@@ -193,7 +194,8 @@ def train_dygraph(args, batch_generator):
                     else:
                         logging.info(
                             "step_idx: %d, epoch: %d, batch: %d, avg loss: %f, "
-                            "normalized loss: %f, ppl: %f, speed: %.2f step/s" %
+                            "normalized loss: %f, ppl: %f, speed: %.2f steps/s"
+                            %
                             (step_idx, pass_id, batch_id, total_avg_cost,
                              total_avg_cost - loss_normalizer,
                              np.exp([min(total_avg_cost, 100)]),
@@ -202,7 +204,7 @@ def train_dygraph(args, batch_generator):
                         avg_batch_time = time.time()
                 batch_id += 1
                 step_idx += 1
-                if step_idx == step_num:
+                if step_idx == STEP_NUM:
                     if args.save_dygraph_model_path:
                         model_dir = os.path.join(args.save_dygraph_model_path)
                         if not os.path.exists(model_dir):
@@ -221,7 +223,8 @@ def train_dygraph(args, batch_generator):
 
 def predict_dygraph(args, batch_generator):
     with fluid.dygraph.guard(place):
-        fluid.default_main_program().random_seed = SEED
+        paddle.seed(SEED)
+        paddle.framework.random._manual_program_seed(SEED)
 
         # define data loader
         test_loader = fluid.io.DataLoader.from_generator(capacity=10)
@@ -277,14 +280,14 @@ def predict_dygraph(args, batch_generator):
                     speed = args.print_step / (time.time() - avg_batch_time)
                     speed_list.append(speed)
                     logging.info(
-                        "Dygraph Predict: step_idx: %d, 1st seq_id: %d, 1st seq_score: %.2f, speed: %.3f step/s"
+                        "Dygraph Predict: step_idx: %d, 1st seq_id: %d, 1st seq_score: %.2f, speed: %.3f steps/s"
                         % (step_idx, seq_ids[0][0][0], seq_scores[0][0], speed))
                     avg_batch_time = time.time()
 
             step_idx += 1
-            if step_idx == step_num:
+            if step_idx == STEP_NUM:
                 break
-        logging.info("Dygraph Predict:  avg_speed: %.4f step/s" %
+        logging.info("Dygraph Predict:  avg_speed: %.4f steps/s" %
                      (np.mean(speed_list)))
         return seq_ids, seq_scores
 
@@ -292,7 +295,8 @@ def predict_dygraph(args, batch_generator):
 def predict_static(args, batch_generator):
     test_prog = fluid.Program()
     with fluid.program_guard(test_prog):
-        test_prog.random_seed = SEED
+        paddle.seed(SEED)
+        paddle.framework.random._manual_program_seed(SEED)
 
         # define input and reader
         input_field_names = util.encoder_data_input_fields + util.fast_decoder_data_input_fields
@@ -353,14 +357,14 @@ def predict_static(args, batch_generator):
                 speed = args.print_step / (time.time() - avg_batch_time)
                 speed_list.append(speed)
                 logging.info(
-                    "Static Predict: step_idx: %d, 1st seq_id: %d, 1st seq_score: %.2f, speed: %.3f step/s"
+                    "Static Predict: step_idx: %d, 1st seq_id: %d, 1st seq_score: %.2f, speed: %.3f steps/s"
                     % (step_idx, seq_ids[0][0][0], seq_scores[0][0], speed))
                 avg_batch_time = time.time()
 
         step_idx += 1
-        if step_idx == step_num:
+        if step_idx == STEP_NUM:
             break
-    logging.info("Static Predict:  avg_speed: %.4f step/s" %
+    logging.info("Static Predict:  avg_speed: %.4f steps/s" %
                  (np.mean(speed_list)))
 
     return seq_ids, seq_scores

@@ -13,9 +13,23 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #include "paddle/fluid/operators/dequantize_log_op.h"
-#include <math.h>
+
 #include <string>
-#include <vector>
+
+namespace paddle {
+namespace framework {
+class InferShapeContext;
+class OpDesc;
+template <typename T>
+class EmptyGradOpMaker;
+}  // namespace framework
+namespace imperative {
+class OpBase;
+}  // namespace imperative
+namespace platform {
+struct CPUPlace;
+}  // namespace platform
+}  // namespace paddle
 
 namespace paddle {
 namespace operators {
@@ -31,9 +45,9 @@ struct DequantizeFunctor<platform::CPUDeviceContext, T> {
     int ind = in->numel();
     for (size_t i = 0; i < (unsigned)ind; i++) {
       if (input_data[i] < 0) {
-        output_data[i] = -std::pow(2.0, dict_data[input_data[i] + 128]);
+        output_data[i] = -dict_data[input_data[i] + 128];
       } else {
-        output_data[i] = std::pow(2.0, dict_data[input_data[i]]);
+        output_data[i] = dict_data[input_data[i]];
       }
     }
   }

@@ -33,6 +33,14 @@ def execute(main_program, startup_program):
     exe.run(main_program)
 
 
+def get_vaild_warning_num(warning, w):
+    num = 0
+    for i in range(len(w)):
+        if warning in str(w[i].message):
+            num += 1
+    return num
+
+
 class TestDeviceGuard(unittest.TestCase):
     def test_device_guard(self):
         main_program = fluid.Program()
@@ -56,6 +64,31 @@ class TestDeviceGuard(unittest.TestCase):
                 self.assertEqual(op.desc.attr(device_attr_name), "cpu")
             if op.type == 'crop_tensor':
                 self.assertEqual(op.desc.attr(device_attr_name), "gpu")
+
+        execute(main_program, startup_program)
+
+    def test_device_guard_with_id(self):
+        main_program = fluid.Program()
+        startup_program = fluid.Program()
+        with fluid.program_guard(main_program, startup_program):
+            data1 = fluid.layers.fill_constant(
+                shape=[1, 3, 8, 8], value=0.5, dtype='float32')
+            data2 = fluid.layers.fill_constant(
+                shape=[1, 3, 5, 5], value=0.5, dtype='float32')
+            shape = fluid.layers.shape(data2)
+            with fluid.device_guard("cpu"):
+                shape = fluid.layers.slice(
+                    shape, axes=[0], starts=[0], ends=[4])
+                with fluid.device_guard("gpu:1"):
+                    out = fluid.layers.crop_tensor(data1, shape=shape)
+        # check if the device attr is set correctly
+        all_ops = main_program.global_block().ops
+        device_attr_name = core.op_proto_and_checker_maker.kOpDeviceAttrName()
+        for op in all_ops:
+            if op.type == 'slice':
+                self.assertEqual(op.desc.attr(device_attr_name), "cpu")
+            if op.type == 'crop_tensor':
+                self.assertEqual(op.desc.attr(device_attr_name), "gpu:1")
 
         execute(main_program, startup_program)
 
@@ -108,7 +141,10 @@ class TestDeviceGuard(unittest.TestCase):
                         i = fluid.layers.increment(x=i, value=1, in_place=True)
                         fluid.layers.less_than(x=i, y=loop_len, cond=cond)
 
-        assert len(w) == 1
+        warning = "The Op(while) is not support to set device."
+        warning_num = get_vaild_warning_num(warning, w)
+        assert warning_num == 1
+
         all_ops = main_program.global_block().ops
         device_attr_name = core.op_proto_and_checker_maker.kOpDeviceAttrName()
         for op in all_ops:
@@ -123,7 +159,13 @@ class TestDeviceGuard(unittest.TestCase):
                 out = fluid.layers.fill_constant(
                     shape=[1], value=0.2, dtype='float32')
 
+        def device_attr2():
+            with fluid.device_guard("cpu:1"):
+                out = fluid.layers.fill_constant(
+                    shape=[1], value=0.2, dtype='float32')
+
         self.assertRaises(ValueError, device_attr)
+        self.assertRaises(ValueError, device_attr2)
 
     def test_warning(self):
         main_program = fluid.Program()
@@ -138,7 +180,10 @@ class TestDeviceGuard(unittest.TestCase):
                         shape=[1], value=4.0, dtype='float32')
                     result = fluid.layers.less_than(x=x, y=y, force_cpu=False)
 
-        assert len(w) == 2
+        warning = "\'device_guard\' has higher priority when they are used at the same time."
+        warning_num = get_vaild_warning_num(warning, w)
+        assert warning_num == 2
+
         all_ops = main_program.global_block().ops
         device_attr_name = core.op_proto_and_checker_maker.kOpDeviceAttrName()
         for op in all_ops:

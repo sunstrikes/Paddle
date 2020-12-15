@@ -19,6 +19,7 @@ limitations under the License. */
 #include <string>
 #include <unordered_map>
 #include <vector>
+
 #include "paddle/fluid/framework/data_set.h"
 #include "paddle/fluid/framework/executor_gc_helper.h"
 #include "paddle/fluid/framework/garbage_collector.h"
@@ -31,6 +32,11 @@ limitations under the License. */
 
 namespace paddle {
 namespace framework {
+
+class Dataset;
+class ProgramDesc;
+class Scope;
+class TrainerBase;
 
 struct ExecutorPrepareContext {
   ExecutorPrepareContext(const framework::ProgramDesc& prog, size_t block_id);
@@ -87,7 +93,7 @@ class Executor {
   // This API is very slow.
   void Run(const ProgramDesc& program, Scope* scope,
            std::map<std::string, const LoDTensor*>* feed_targets,
-           std::map<std::string, LoDTensor*>* fetch_targets,
+           std::map<std::string, FetchType*>* fetch_targets,
            bool create_local_scope = true, bool create_vars = true,
            const std::string& feed_holder_name = "feed",
            const std::string& fetch_holder_name = "fetch");
@@ -95,7 +101,7 @@ class Executor {
   // This API is very slow.
   void RunPreparedContext(ExecutorPrepareContext* ctx, Scope* scope,
                           std::map<std::string, const LoDTensor*>* feed_targets,
-                          std::map<std::string, LoDTensor*>* fetch_targets,
+                          std::map<std::string, FetchType*>* fetch_targets,
                           bool create_local_scope = true,
                           bool create_vars = true,
                           const std::string& feed_holder_name = "feed",

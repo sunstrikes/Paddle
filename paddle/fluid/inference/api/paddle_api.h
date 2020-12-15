@@ -27,9 +27,10 @@
 #include <memory>
 #include <string>
 #include <vector>
-
-/*! \namespace paddle
- */
+#include "crypto/cipher.h"
+#include "paddle_infer_declare.h"  // NOLINT
+                                   /*! \namespace paddle
+                                    */
 namespace paddle {
 
 /// \brief Paddle data type.
@@ -86,7 +87,7 @@ enum PaddleDType {
 /// delete[] external_memory; // manage the memory lifetime outside.
 /// \endcode
 ///
-class PaddleBuf {
+class PD_INFER_DECL PaddleBuf {
  public:
   ///
   /// \brief PaddleBuf allocate memory internally, and manage it.
@@ -151,7 +152,7 @@ class PaddleBuf {
 ///
 /// \brief Basic input and output data structure for PaddlePredictor.
 ///
-struct PaddleTensor {
+struct PD_INFER_DECL PaddleTensor {
   PaddleTensor() = default;
   std::string name;  ///<  variable name.
   std::vector<int> shape;
@@ -170,7 +171,7 @@ enum class PaddlePlace { kUNK = -1, kCPU, kGPU };
 /// AnalysisPredictor.
 /// It is obtained through PaddlePredictor::GetinputTensor()
 /// and PaddlePredictor::GetOutputTensor() interface.
-class ZeroCopyTensor {
+class PD_INFER_DECL ZeroCopyTensor {
  public:
   /// \brief Reset the shape of the tensor.
   /// Generally it's only used for the input tensor.
@@ -247,7 +248,7 @@ class ZeroCopyTensor {
 
 /// \brief A Predictor for executing inference on a model.
 /// Base class for AnalysisPredictor and NativePaddlePredictor.
-class PaddlePredictor {
+class PD_INFER_DECL PaddlePredictor {
  public:
   struct Config;
   PaddlePredictor() = default;
@@ -306,11 +307,28 @@ class PaddlePredictor {
   /// This will save the IO copy for transfering inputs and outputs to predictor
   /// workspace
   /// and get some performance improvement.
-  /// To use it, one should call the AnalysisConfig.SwitchUseFeedFetchOp(true)
+  /// To use it, one should call the AnalysisConfig.SwitchUseFeedFetchOp(false)
   /// and then use the `GetInputTensor` and `GetOutputTensor`
   /// to directly write or read the input/output tensors.
   /// \return Whether the run is successful
   virtual bool ZeroCopyRun() { return false; }
+
+  ///
+  /// \brief Clear the intermediate tensors of the predictor
+  ///
+  ///
+  virtual void ClearIntermediateTensor() {}
+
+  ///
+  /// \brief Release all tmp tensor to compress the size of the memory pool.
+  /// The memory pool is considered to be composed of a list of chunks, if
+  /// the chunk is not occupied, it can be released.
+  ///
+  /// \return Number of bytes released. It may be smaller than the actual
+  /// released memory, because part of the memory is not managed by the
+  /// MemoryPool.
+  ///
+  virtual uint64_t TryShrinkMemory() { return 0; }
 
   /// \brief Clone an existing predictor
   /// When using clone, the same network will be created,
@@ -339,7 +357,8 @@ class PaddlePredictor {
 /// During inference procedure, there are many parameters(model/params path,
 /// place of inference, etc.)
 ///
-struct NativeConfig : public PaddlePredictor::Config {
+struct PD_INFER_DECL NativeConfig : public PaddlePredictor::Config {
+  NativeConfig();
   /// GPU related fields.
   bool use_gpu{false};
   int device{0};
@@ -388,6 +407,22 @@ struct NativeConfig : public PaddlePredictor::Config {
 template <typename ConfigT>
 std::unique_ptr<PaddlePredictor> CreatePaddlePredictor(const ConfigT& config);
 
+struct AnalysisConfig;
+struct NativeConfig;
+struct DemoConfig;
+
+template <>
+PD_INFER_DECL std::unique_ptr<PaddlePredictor>
+CreatePaddlePredictor<AnalysisConfig>(const AnalysisConfig& config);
+
+template <>
+PD_INFER_DECL std::unique_ptr<PaddlePredictor>
+CreatePaddlePredictor<NativeConfig>(const NativeConfig& config);
+
+template <>
+PD_INFER_DECL std::unique_ptr<PaddlePredictor>
+CreatePaddlePredictor<DemoConfig>(const DemoConfig& config);
+
 /// NOTE The following APIs are too trivial, we will discard it in the following
 /// versions.
 ///
@@ -398,10 +433,21 @@ enum class PaddleEngineKind {
 };
 
 template <typename ConfigT, PaddleEngineKind engine>
-std::unique_ptr<PaddlePredictor> CreatePaddlePredictor(const ConfigT& config);
+PD_INFER_DECL std::unique_ptr<PaddlePredictor> CreatePaddlePredictor(
+    const ConfigT& config);
 
-int PaddleDtypeSize(PaddleDType dtype);
+template <>
+PD_INFER_DECL std::unique_ptr<PaddlePredictor> CreatePaddlePredictor<
+    NativeConfig, PaddleEngineKind::kNative>(const NativeConfig& config);
 
-std::string get_version();
+template <>
+PD_INFER_DECL std::unique_ptr<PaddlePredictor> CreatePaddlePredictor<
+    AnalysisConfig, PaddleEngineKind::kAnalysis>(const AnalysisConfig& config);
+
+PD_INFER_DECL int PaddleDtypeSize(PaddleDType dtype);
+
+PD_INFER_DECL std::string get_version();
+
+PD_INFER_DECL std::string UpdateDllFlag(const char* name, const char* value);
 
 }  // namespace paddle

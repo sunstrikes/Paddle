@@ -28,6 +28,11 @@
 #include "paddle/fluid/platform/device_context.h"
 #include "paddle/fluid/platform/enforce.h"
 #include "paddle/fluid/platform/profiler.h"
+#ifdef PADDLE_WITH_MKLDNN
+#include "paddle/fluid/platform/mkldnn_helper.h"
+#endif
+
+DECLARE_bool(use_mkldnn);
 
 namespace paddle {
 namespace imperative {
@@ -41,7 +46,9 @@ void ThreadSafeNameSet::Insert(const std::string& name) {
 void ThreadSafeNameSet::Remove(const std::string& name) {
   std::lock_guard<std::mutex> guard(mtx_);
   auto iter = set_.find(name);
-  PADDLE_ENFORCE_EQ(iter != set_.end(), true, "%s does not exist", name);
+  PADDLE_ENFORCE_EQ(
+      iter != set_.end(), true,
+      platform::errors::NotFound("Variable name %s does not exist", name));
   set_.erase(iter);
 }
 
@@ -53,48 +60,6 @@ std::vector<std::string> ThreadSafeNameSet::Names() const {
 ThreadSafeNameSet VarBase::name_set_;
 
 std::vector<std::string> VarBase::AliveVarNames() { return name_set_.Names(); }
-
-static framework::VariableNameMap CreateVarNameMap(
-    const framework::OpInfo& op_info, const std::string& op_type,
-    const NameVarBaseMap& varbase_map, bool is_input) {
-  if (op_info.proto_ == nullptr) {
-    framework::VariableNameMap result;
-
-    for (auto& it : varbase_map) {
-      auto& var_vector = it.second;
-      std::vector<std::string> args;
-      args.reserve(var_vector.size());
-      for (auto& var_base : var_vector) {
-        args.emplace_back(var_base->Name());
-      }
-      result[it.first] = std::move(args);
-    }
-    return result;
-  }
-
-  framework::VariableNameMap result;
-
-  for (auto& var :
-       is_input ? op_info.Proto().inputs() : op_info.Proto().outputs()) {
-    auto it = varbase_map.find(var.name());
-    if (it == varbase_map.end()) {
-      PADDLE_ENFORCE_EQ(
-          var.dispensable(), true,
-          "Var: %s not dispensable and there are no such var in inputs",
-          var.name());
-      result[var.name()] = {};
-    } else {
-      auto& var_vector = it->second;
-      std::vector<std::string> args;
-      args.reserve(var_vector.size());
-      for (auto& var_base : var_vector) {
-        args.emplace_back(var_base->Name());
-      }
-      result[var.name()] = std::move(args);
-    }
-  }
-  return result;
-}
 
 static framework::RuntimeContext PrepareRuntimeContext(
     const NameVarBaseMap& ins, const NameVarBaseMap& outs) {
@@ -232,6 +197,9 @@ void VarBase::ClearGradient() {
       auto* grad_t =
           grad_var_->MutableVar()->GetMutable<framework::SelectedRows>();
       if (grad_t->mutable_value()->IsInitialized()) {
+#ifdef PADDLE_WITH_MKLDNN
+        if (FLAGS_use_mkldnn) ClearMKLDNNCache(grad_t->place());
+#endif
         grad_t->mutable_rows()->clear();
         grad_t->mutable_value()->clear();
       }
@@ -242,8 +210,15 @@ void VarBase::ClearGradient() {
         auto* dev_ctx =
             platform::DeviceContextPool::Instance().Get(grad_t->place());
         operators::math::set_constant(*dev_ctx, grad_t, 0.0);
+#ifdef PADDLE_WITH_MKLDNN
+        if (FLAGS_use_mkldnn) ClearMKLDNNCache(grad_t->place());
+#endif
       }
     }
+    // TODO(zhouwei): It's better to free memory of grad by grad_t->claer.
+    // But will have some bug on mac CPU of yolov3 model, why?
+    // After fix this bug, function SetIsEmpty() isn't need
+    grad_var_->SharedVar()->SetIsEmpty(true);
   }
 }
 
@@ -307,6 +282,45 @@ std::shared_ptr<VarBase> VarBase::NewVarBase(const platform::Place& dst_place,
   }
 }
 
+void VarBase::CopyFrom(const VarBase& src, const bool blocking) {
+  if (SharedVar()->IsEmpty()) {
+    VLOG(3) << "deep copy Variable from " << src.Name() << " to " << Name();
+    SetPersistable(src.Persistable());
+    SetDataType(src.DataType());
+    SetType(src.Type());
+    SetOverridedStopGradient(src.OverridedStopGradient());
+    if (!src.SharedVar()->IsEmpty()) {
+      const platform::Place& place = src.Place();
+      if (src.Var().IsType<framework::LoDTensor>()) {
+        auto& src_tensor = src.Var().Get<framework::LoDTensor>();
+        auto* dst_tensor = MutableVar()->GetMutable<framework::LoDTensor>();
+        dst_tensor->set_lod(src_tensor.lod());
+        framework::TensorCopy(src_tensor, place, dst_tensor);
+      } else if (src.Var().IsType<framework::SelectedRows>()) {
+        auto& src_selected_rows = src.Var().Get<framework::SelectedRows>();
+        auto* dst_selected_rows =
+            MutableVar()->GetMutable<framework::SelectedRows>();
+        dst_selected_rows->set_height(src_selected_rows.height());
+        dst_selected_rows->set_rows(src_selected_rows.rows());
+        framework::TensorCopy(src_selected_rows.value(), place,
+                              dst_selected_rows->mutable_value());
+      }
+      if (blocking) {
+        platform::DeviceContextPool::Instance().Get(place)->Wait();
+      }
+    }
+  }
+}
+
+void VarBase::BumpInplaceVersion() {
+  PADDLE_ENFORCE_EQ(
+      Var().IsInitialized(), true,
+      platform::errors::InvalidArgument(
+          "Tensor %s has not been initialized, please check if it has no data.",
+          Name()));
+  MutableVar()->BumpInplaceVersion();
+}
+
 void OpBase::SetType(const std::string& type) {
   op_ = framework::OpRegistry::CreateOp(type, {}, {}, {}, false);
 }
@@ -323,7 +337,9 @@ static void OpBaseRunImpl(const framework::OperatorBase& op,
                           const framework::AttributeMap& attrs,
                           const platform::Place& place) {
   auto* op_kernel = dynamic_cast<const framework::OperatorWithKernel*>(&op);
-  PADDLE_ENFORCE_NOT_NULL(op_kernel, "only support op with kernel");
+  PADDLE_ENFORCE_NOT_NULL(
+      op_kernel, platform::errors::PermissionDenied(
+                     "Only support operator with kernel in Dygraph mode."));
   auto& info = op.Info();
   if (info.infer_var_type_) {
     RuntimeInferVarTypeContext<VarType> infer_var_type_ctx(ins, outs, attrs);
@@ -339,7 +355,6 @@ static void OpBaseRunImpl(const framework::OperatorBase& op,
     }
   }
 
-  // VLOG(3) << "Running Op " << op.Type();
   VLOG(5) << LayerDebugString(op.Type(), ins, outs);
   auto prepared_op = PreparedOp::Prepare(ins, outs, *op_kernel, place, attrs);
 
@@ -389,7 +404,6 @@ static void ClearNoNeedBufferInputs(OpBase* op) {
       PADDLE_ENFORCE_EQ(var.IsType<framework::LoDTensor>(), true,
                         platform::errors::PermissionDenied(
                             "NoNeedBufferVars only support LoDTensor"));
-      // TODO(zjl): support higher order derivatives
       auto new_var = new VariableWrapper(each_var->Name());
       auto* new_tensor =
           new_var->MutableVar()->GetMutable<framework::LoDTensor>();

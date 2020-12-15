@@ -28,41 +28,32 @@ class ElementwiseMulOp : public ElementwiseOp {
   using Tensor = framework::Tensor;
   using ElementwiseOp::ElementwiseOp;
 
-#ifdef PADDLE_WITH_MKLDNN
-  static bool AreDimsAndFormatCorrect(const framework::ExecutionContext& ctx,
-                                      int simd_width,
-                                      mkldnn::memory::format_tag x_format) {
-    using Tensor = framework::Tensor;
-    using paddle::framework::vectorize;
-    using mkldnn::memory;
-    auto* x = ctx.Input<Tensor>("X");
-    auto* y = ctx.Input<Tensor>("Y");
-    auto x_dims = vectorize(x->dims());
-    const bool are_dims_divisable = !(x_dims[1] % simd_width);
-    const bool is_x_format_correct = x->format() == x_format;
-    const bool is_y_format_correct = vectorize(y->dims()).size() == 2;
-    return are_dims_divisable && is_x_format_correct && is_y_format_correct;
-  }
-#endif
-
   framework::OpKernelType GetExpectedKernelType(
       const framework::ExecutionContext& ctx) const override {
-    auto input_data_type = OperatorWithKernel::IndicateVarDataType(ctx, "X");
+    auto input_data_type =
+        OperatorWithKernel::IndicateOrPromoteVarDataTypes(ctx, "X", "Y");
 
 #ifdef PADDLE_WITH_MKLDNN
-    using mkldnn::memory;
-    if (platform::CanMKLDNNBeUsed(ctx)) {
-      bool can_use_avx512_kernel =
-          platform::MayIUse(platform::avx512f) &&
-          AreDimsAndFormatCorrect(ctx, 16, memory::format_tag::nChw16c);
-      if (can_use_avx512_kernel) {
-        return framework::OpKernelType(input_data_type, ctx.GetPlace(),
-                                       framework::DataLayout::kMKLDNN,
-                                       framework::LibraryType::kMKLDNN);
-      }
+    if (this->CanMKLDNNBeUsed(ctx)) {
+      return framework::OpKernelType(input_data_type, ctx.GetPlace(),
+                                     framework::DataLayout::kMKLDNN,
+                                     framework::LibraryType::kMKLDNN);
     }
 #endif
     return framework::OpKernelType(input_data_type, ctx.GetPlace());
+  }
+
+  framework::OpKernelType GetKernelTypeForVar(
+      const std::string& var_name, const framework::Tensor& tensor,
+      const framework::OpKernelType& expected_kernel_type) const {
+    if (framework::IsComplexType(expected_kernel_type.data_type_)) {
+      // only promote inputs’s types when contains complex input
+      return framework::OpKernelType(tensor.type(), tensor.place(),
+                                     tensor.layout());
+    } else {
+      return framework::OpKernelType(expected_kernel_type.data_type_,
+                                     tensor.place(), tensor.layout());
+    }
   }
 };
 
@@ -94,15 +85,19 @@ class ElementwiseMulKernel : public framework::OpKernel<T> {
  public:
   void Compute(const framework::ExecutionContext& ctx) const override {
     auto x_var = ctx.InputVar("X");
-    PADDLE_ENFORCE(x_var != nullptr,
-                   "Cannot get input Variable X, variable name = %s",
-                   ctx.InputName("X"));
+    PADDLE_ENFORCE_EQ(x_var != nullptr, true,
+                      platform::errors::InvalidArgument(
+                          "Cannot get input Variable X, Variable name = %s.",
+                          ctx.InputName("X")));
     auto* y = ctx.Input<framework::LoDTensor>("Y");
 
     framework::Tensor x, *z;
     if (x_var->IsType<framework::SelectedRows>()) {
-      PADDLE_ENFORCE(y->dims().size() == 1 && y->dims()[0] == 1,
-                     "For elementwise_op, if X is Sparse, Y must be scalar.");
+      PADDLE_ENFORCE_EQ(y->dims().size() == 1 && y->dims()[0] == 1, true,
+                        platform::errors::InvalidArgument(
+                            "For elementwise_op, if X is Sparse, Y must be "
+                            "scalar. But reveived the size of Y = %s.",
+                            y->dims().size()));
       auto& x_sele = x_var->Get<framework::SelectedRows>();
       auto out_sele = ctx.Output<framework::SelectedRows>("Out");
       x = x_sele.value();
@@ -115,8 +110,10 @@ class ElementwiseMulKernel : public framework::OpKernel<T> {
       x = x_var->Get<framework::LoDTensor>();
       z = ctx.Output<framework::LoDTensor>("Out");
     } else {
-      PADDLE_THROW("X's type[%s] is not supported by elementwise_op.",
-                   framework::ToTypeName(x_var->Type()));
+      PADDLE_THROW(platform::errors::InvalidArgument(
+          "X's type[%s] is not supported by elementwise_op. X's type should be "
+          "LoDTensor or SelectedRows.",
+          framework::ToTypeName(x_var->Type())));
     }
 
     z->mutable_data<T>(ctx.GetPlace());

@@ -114,7 +114,7 @@ def auc(input,
         num_thresholds=2**12 - 1,
         topk=1,
         slide_steps=1):
-    """
+    r"""
     **Area Under the Curve (AUC) Layer**
 
     This implementation computes the AUC according to forward output and label.
@@ -175,6 +175,8 @@ def auc(input,
             #[array([0.5])]
     """
     helper = LayerHelper("auc", **locals())
+    check_variable_and_dtype(input, 'input', ['float32', 'float64'], 'auc')
+    check_variable_and_dtype(label, 'label', ['int32', 'int64'], 'auc')
     auc_out = helper.create_variable_for_type_inference(dtype="float64")
     batch_auc_out = helper.create_variable_for_type_inference(dtype="float64")
     # make tp, tn, fp, fn persistable, so that can accumulate all batches.

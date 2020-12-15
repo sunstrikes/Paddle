@@ -19,8 +19,7 @@ namespace operators {
 class FakeInitInferShape : public framework::InferShapeBase {
  public:
   void operator()(framework::InferShapeContext *ctx) const override {
-    PADDLE_ENFORCE(ctx->HasOutput("Out"),
-                   "Output(Out) of FakeInitOp should not be null.");
+    OP_INOUT_CHECK(ctx->HasOutput("Out"), "Output", "Out", "FakeInit");
     auto &shape = ctx->Attrs().Get<std::vector<int64_t>>("shape");
     ctx->SetOutputDim("Out", framework::make_ddim(shape));
   }
@@ -44,9 +43,9 @@ class FakeInitOp : public framework::OperatorBase {
       tensor = out_var.GetMutable<framework::SelectedRows>()->mutable_value();
       tensor->Resize(framework::make_ddim(Attr<std::vector<int64_t>>("shape")));
     } else {
-      PADDLE_THROW(
+      PADDLE_THROW(platform::errors::InvalidArgument(
           "fake init op's output only"
-          "supports SelectedRows and LoDTensor");
+          "supports SelectedRows and LoDTensor"));
     }
   }
 };

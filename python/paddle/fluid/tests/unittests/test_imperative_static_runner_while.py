@@ -23,9 +23,13 @@ import six
 import paddle
 import paddle.fluid as fluid
 from paddle.fluid import core
+from paddle.fluid import unique_name
 from test_imperative_base import new_program_scope
+from jit_load_rename_var import rename_var_with_generator
 
 import paddle.fluid.transpiler.details.program_utils as pu
+
+LOADED_VAR_SUFFIX = ".load_0"
 
 
 def while_softmax_regression(img):
@@ -83,8 +87,6 @@ class TestImperativeStaticModelRunnerWhile(unittest.TestCase):
         optimizer = fluid.optimizer.SGD(learning_rate=0.001)
         optimizer.minimize(avg_loss)
 
-        # pu.program_to_code(main_program, skip_op_callstack=True)
-
         place = fluid.CUDAPlace(0) if core.is_compiled_with_cuda(
         ) else fluid.CPUPlace()
 
@@ -111,9 +113,7 @@ class TestImperativeStaticModelRunnerWhile(unittest.TestCase):
             fluid.default_startup_program().random_seed = self.seed
             fluid.default_main_program().random_seed = self.seed
             np.random.seed(self.seed)
-
-            backward_strategy = fluid.dygraph.BackwardStrategy()
-            backward_strategy.sort_sum_gradient = True
+            fluid.set_flags({'FLAGS_sort_sum_gradient': True})
 
             while_net = fluid.dygraph.static_runner.StaticModelRunner(
                 self.save_dirname)
@@ -136,12 +136,12 @@ class TestImperativeStaticModelRunnerWhile(unittest.TestCase):
                 label = data[1]
                 label.stop_gradient = True
 
-                cost = while_net(inputs=img)
+                cost = while_net(img)
 
                 loss = fluid.layers.cross_entropy(cost, label)
                 avg_loss = fluid.layers.mean(loss)
 
-                avg_loss.backward(backward_strategy)
+                avg_loss.backward()
                 sgd.minimize(avg_loss)
                 while_net.clear_gradients()
 
@@ -213,21 +213,26 @@ class TestImperativeStaticModelRunnerWhile(unittest.TestCase):
         self.train_and_save_model()
 
         # # Phase 2. load model & train dygraph
-        dy_out, dy_param_init_value, dy_param_value = \
+        with unique_name.guard():
+            dy_out, dy_param_init_value, dy_param_value = \
             self.load_and_train_dygraph()
 
-        static_out, static_param_init_value, static_param_value = \
-            self.load_and_train_static()
+        with unique_name.guard():
+            static_out, static_param_init_value, static_param_value = \
+                self.load_and_train_static()
 
         # Phase 3. compare
+        with unique_name.guard():
+            dict_old_new_init = rename_var_with_generator(
+                static_param_init_value.keys())
         for key, value in six.iteritems(static_param_init_value):
-            key += core.loaded_var_suffix()
+            key = dict_old_new_init[key]
             self.assertTrue(np.array_equal(value, dy_param_init_value[key]))
 
         self.assertTrue(np.allclose(static_out, dy_out))
 
         for key, value in six.iteritems(static_param_value):
-            key += core.loaded_var_suffix()
+            key += LOADED_VAR_SUFFIX
             self.assertTrue(np.allclose(value, dy_param_value[key], atol=1e-5))
 
 

@@ -27,7 +27,7 @@ void SetConfig(AnalysisConfig *cfg) {
   cfg->DisableGpu();
   cfg->SwitchIrOptim();
   cfg->SwitchSpecifyInputNames();
-  cfg->SetCpuMathLibraryNumThreads(FLAGS_paddle_num_threads);
+  cfg->SetCpuMathLibraryNumThreads(FLAGS_cpu_num_threads);
 }
 
 void SetInput(std::vector<std::vector<PaddleTensor>> *inputs) {
@@ -40,7 +40,7 @@ void SetOptimConfig(AnalysisConfig *cfg) {
   cfg->DisableGpu();
   cfg->SwitchIrOptim();
   cfg->SwitchSpecifyInputNames();
-  cfg->SetCpuMathLibraryNumThreads(FLAGS_paddle_num_threads);
+  cfg->SetCpuMathLibraryNumThreads(FLAGS_cpu_num_threads);
 }
 
 // Easy for profiling independently.
@@ -112,7 +112,11 @@ TEST(Analyzer_resnet50, compare_determine) {
 TEST(Analyzer_resnet50, save_optim_model) {
   AnalysisConfig cfg;
   std::string optimModelPath = FLAGS_infer_model + "/saved_optim_model";
+#ifdef _WIN32
+  _mkdir(optimModelPath.c_str());
+#else
   mkdir(optimModelPath.c_str(), 0777);
+#endif
   SetConfig(&cfg);
   SaveOptimModel(&cfg, optimModelPath);
 }

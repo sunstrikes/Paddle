@@ -12,9 +12,20 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
 
-#include "paddle/fluid/framework/lod_rank_table.h"
 #include "paddle/fluid/framework/op_registry.h"
 #include "paddle/fluid/platform/device_context.h"
+
+namespace paddle {
+namespace framework {
+class LoDRankTable;
+class LoDTensor;
+class OpDesc;
+class Scope;
+}  // namespace framework
+namespace imperative {
+class OpBase;
+}  // namespace imperative
+}  // namespace paddle
 
 namespace paddle {
 namespace operators {
@@ -188,7 +199,9 @@ class ReorderLoDTensorByRankTableOp : public ReorderLoDTensorByRankTableBase {
     size_t out_offset = 0;
     out->mutable_lod()->clear();
     for (auto &item : rank_table.items()) {
-      PADDLE_ENFORCE_LT(item.index, absolute_table.size());
+      PADDLE_ENFORCE_LT(item.index, absolute_table.size(),
+                        platform::errors::OutOfRange(
+                            "The value of rank_table is out of range."));
       out_offset = CopyTensorAndLod(place, absolute_table[item.index], x, out,
                                     out_offset);
     }

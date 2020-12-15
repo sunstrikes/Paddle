@@ -13,22 +13,26 @@
 # limitations under the License.
 
 # TODO: define all functions about input & output in this directory 
-# __all__ = ['Dataset',
-#            'Sampler',
-#            'Transform',
-#            'DataLoader',
-#            'load',
-#            'save',
-#            'load_program_state',
-#            'set_program_state',
-#            'load_inference_model',
-#            'save_inference_model',
-#            'batch',
-#            'shuffle',
-#            'buffered',
-#            'cache',
-#            'chain',
-#            'firstn',
-#            'compose',
-#            'map_readers',
-#            'xmap_readers']
+__all__ = [
+    'Dataset',
+    'IterableDataset',
+    'TensorDataset',
+    'ComposeDataset',
+    'ChainDataset',
+    'BatchSampler',
+    'DistributedBatchSampler',
+    #            'Transform',
+    'DataLoader',
+    'get_worker_info',
+    'Sampler',
+    'SequenceSampler',
+    'RandomSampler',
+    'WeightedRandomSampler',
+    'random_split',
+    'Subset'
+]
+
+from ..fluid.io import DataLoader
+from ..fluid.dataloader import Dataset, IterableDataset, BatchSampler, get_worker_info, \
+        TensorDataset, Sampler, SequenceSampler, RandomSampler, DistributedBatchSampler, \
+        ComposeDataset, ChainDataset, WeightedRandomSampler, Subset, random_split
